@@ -1,0 +1,151 @@
+# Single entrypoint for local development and CI: workflows call these targets
+# only, so a green local run means a green CI run.
+version: '3'
+
+vars:
+  BIN: '{{.ROOT_DIR}}/.bin'
+  BUILD: '{{.ROOT_DIR}}/.build'
+  # Pinned tool versions, each at least two weeks old when pinned. Bump deliberately, in their own PR.
+  ACTIONLINT_VERSION: v1.7.12
+  GITLEAKS_VERSION: v8.30.1
+  ASH_VERSION: v3.7.1
+  APKO_VERSION: v1.4.15
+  MELANGE_VERSION: v0.64.0
+  COSIGN_VERSION: v3.1.4
+  CRANE_VERSION: v0.22.1
+  GRYPE_VERSION: v0.121.0
+  SYFT_VERSION: v1.55.0
+  UV: uv run --project {{.ROOT_DIR}} --frozen
+  MMDC: '{{.ROOT_DIR}}/tools/mermaid/node_modules/.bin/mmdc'
+  FACTORY: '{{.UV}} python -m imagefactory'
+
+tasks:
+  default:
+    cmds: [task --list]
+
+  # ---------------------------------------------------------------- tools
+  tools:
+    desc: Install the pinned lint tools into .bin/ and sync the Python and Node environments (factory tools install on demand)
+    deps: [tools:actionlint, tools:gitleaks, tools:py, tools:mermaid]
+
+  tools:actionlint:
+    internal: true
+    run: once
+    cmds: ['GOBIN={{.BIN}} go install github.com/rhysd/actionlint/cmd/actionlint@{{.ACTIONLINT_VERSION}}']
+    status: ['{{.BIN}}/actionlint -version 2>/dev/null | grep -q "{{.ACTIONLINT_VERSION}}"']
+
+  tools:gitleaks:
+    internal: true
+    run: once
+    cmds: ['GOBIN={{.BIN}} go install github.com/zricethezav/gitleaks/v8@{{.GITLEAKS_VERSION}}']
+    status: ['test -x {{.BIN}}/gitleaks']
+
+  tools:factory:
+    desc: Install the pinned factory tools (apko, melange, cosign, crane, grype, syft) into .bin/
+    run: once
+    cmds:
+      - GOBIN={{.BIN}} go install chainguard.dev/apko@{{.APKO_VERSION}}
+      - GOBIN={{.BIN}} go install chainguard.dev/melange@{{.MELANGE_VERSION}}
+      - GOBIN={{.BIN}} go install github.com/sigstore/cosign/v3/cmd/cosign@{{.COSIGN_VERSION}}
+      - GOBIN={{.BIN}} go install github.com/google/go-containerregistry/cmd/crane@{{.CRANE_VERSION}}
+      - GOBIN={{.BIN}} go install github.com/anchore/grype/cmd/grype@{{.GRYPE_VERSION}}
+      - GOBIN={{.BIN}} go install github.com/anchore/syft/cmd/syft@{{.SYFT_VERSION}}
+      - printf '%s\n' {{.APKO_VERSION}} {{.MELANGE_VERSION}} {{.COSIGN_VERSION}} {{.CRANE_VERSION}} {{.GRYPE_VERSION}} {{.SYFT_VERSION}} > {{.BIN}}/.factory-versions
+    status:
+      - test "$(cat {{.BIN}}/.factory-versions 2>/dev/null)" = "$(printf '%s\n' {{.APKO_VERSION}} {{.MELANGE_VERSION}} {{.COSIGN_VERSION}} {{.CRANE_VERSION}} {{.GRYPE_VERSION}} {{.SYFT_VERSION}})"
+
+  tools:py:
+    internal: true
+    run: once
+    cmds: [uv sync --frozen]
+    sources: [uv.lock, pyproject.toml]
+
+  tools:mermaid:
+    internal: true
+    run: once
+    dir: tools/mermaid
+    cmds:
+      - npm ci --no-audit --no-fund
+      # npm does not run puppeteer's postinstall by default; fetch its pinned browser explicitly.
+      - ./node_modules/.bin/puppeteer browsers install chrome-headless-shell
+    status: ['test -x {{.MMDC}}']
+
+  # ---------------------------------------------------------------- lint
+  lint:
+    desc: Run every linter (Python, workflows, secrets, Mermaid, recipes)
+    deps: [lint:py, lint:actions, lint:secrets, lint:mermaid, images:lint]
+
+  lint:py:
+    deps: [tools:py]
+    cmds:
+      - '{{.UV}} ruff check .'
+      - '{{.UV}} ruff format --check .'
+      - '{{.UV}} mypy --strict imagefactory tests'
+
+  lint:actions:
+    deps: [tools:actionlint]
+    cmds: ['{{.BIN}}/actionlint']
+
+  lint:secrets:
+    deps: [tools:gitleaks]
+    cmds: ['{{.BIN}}/gitleaks dir --redact --no-banner --config .gitleaks.toml .']
+
+  lint:mermaid:
+    desc: Prove every Mermaid block in the Markdown parses
+    deps: [tools:mermaid, tools:py]
+    cmds:
+      - >-
+        {{.UV}} python -m imagefactory.mermaidlint --root {{.ROOT_DIR}}
+        --mmdc {{.MMDC}} --puppeteer-config tools/mermaid/puppeteer.json
+
+  # ---------------------------------------------------------------- test
+  test:
+    desc: Unit tests (offline)
+    deps: [tools:py]
+    cmds: ['{{.UV}} pytest']
+
+  # ---------------------------------------------------------------- images
+  images:lint:
+    desc: Check images.yaml, the recipes and cve-exceptions.yaml offline (pins, tags, locks, users, source commits)
+    deps: [tools:py]
+    cmds: ['{{.FACTORY}} lint']
+
+  images:plan:
+    desc: Print the build plan (ONLY=<name>)
+    deps: [tools:py]
+    cmds: ['{{.FACTORY}} plan {{if .ONLY}}--only {{.ONLY}}{{end}}']
+
+  images:lock:
+    desc: Re-resolve the Wolfi-only recipes' lock files (network); review the diff, then run images:lint
+    deps: [tools:py, tools:factory]
+    cmds:
+      - >-
+        for r in $({{.FACTORY}} lockable);
+        do (cd "$(dirname "$r")" && {{.BIN}}/apko lock "$(basename "$r")") || exit 1; done
+
+  images:test:
+    desc: >-
+      Integration test (network): build, smoke-test, scan, sign and publish to a local registry with a
+      throwaway key, then verify; FACTORY_DOCKER=1 adds the melange source builds (needs Docker)
+    deps: [tools:py, tools:factory]
+    cmds:
+      - FACTORY_INTEGRATION=1 FACTORY_BIN={{.BIN}} {{.UV}} pytest -v tests/test_integration.py
+
+  images:build:
+    desc: >-
+      Build, gate, sign and publish (ONLY=<name>, TARGET=<registry>, KEY=<cosign key file or KMS URI>,
+      ARCH=x86_64,aarch64). Without KEY, signs keylessly with the ambient OIDC identity (CI only).
+      SKIP_EXISTING=1 reuses images already published and signed. Source builds need Docker
+    deps: [tools:py, tools:factory]
+    cmds:
+      - >-
+        {{.FACTORY}} build --out {{.BUILD}}/factory --bin {{.BIN}}
+        {{if .KEY}}--key {{.KEY}}{{else}}--keyless{{end}}
+        {{if .ONLY}}--only {{.ONLY}}{{end}} {{if .TARGET}}--target {{.TARGET}}{{end}}
+        {{if .ARCH}}--arch {{.ARCH}}{{end}} {{if .SKIP_EXISTING}}--skip-existing{{end}}
+
+  # ---------------------------------------------------------------- security
+  ash:
+    desc: AWS Automated Security Helper scan; fails closed if ASH did not actually scan (SARIF in .ash/ash_output/reports/)
+    deps: [tools:py]
+    cmds: ['scripts/ash-scan.sh {{.ASH_MODE | default "container"}} {{.ASH_VERSION}}']

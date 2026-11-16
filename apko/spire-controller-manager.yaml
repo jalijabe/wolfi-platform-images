@@ -1,0 +1,37 @@
+# SPIRE Controller Manager, >= 0.8 (TCP SPIFFE mTLS mode).
+#
+# The main package is built from source by melange (melange/) into a local
+# repository the factory appends at build time; Wolfi supplies the base
+# layout and CA bundle (and glibc where the binary links it). No shell and no
+# package manager in the image.
+contents:
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  repositories:
+    - https://packages.wolfi.dev/os
+  packages:
+    - wolfi-baselayout=20230201-r31
+    - ca-certificates-bundle=20261020-r0
+    - spire-controller-manager-src=0.8.1-r0
+
+accounts:
+  groups:
+    - groupname: nonroot
+      gid: 65532
+  users:
+    - username: nonroot
+      uid: 65532
+      gid: 65532
+  run-as: "65532"
+
+entrypoint:
+  command: /usr/bin/spire-controller-manager
+
+annotations:
+  org.opencontainers.image.version: 0.8.1-r0
+  org.opencontainers.image.source: https://github.com/spiffe/spire-controller-manager
+  org.opencontainers.image.licenses: Apache-2.0
+
+archs:
+  - x86_64
+  - aarch64

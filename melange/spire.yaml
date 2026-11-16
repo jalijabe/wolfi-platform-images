@@ -1,0 +1,70 @@
+# SPIRE server and agent, built from source.
+#
+# Wolfi's public spire-server/spire-agent stopped at 1.15.1-r1 with critical and
+# high CVEs fixed only in later revisions it does not publish, so the CVE gate
+# rejects them. Upstream v1.16.0 (2026-11-05) is inside the two-week cooldown;
+# v1.15.5 is the newest release outside it.
+# Go 1.27 (go.mod says 1.26.10): go-jose/v4 v4.1.6, bumped below, requires
+# 1.27, as upstream v1.16.0 does. cgo is on: spire-server links
+# github.com/mattn/go-sqlite3. Packages we build are named <name>-src, so
+# Wolfi's advisories for its own spire-server builds are never applied to ours
+# (their Go modules are scanned directly).
+package:
+  name: spire-server-src
+  version: "1.15.5"
+  epoch: 0
+  description: SPIRE server, built from source by the image factory
+  copyright:
+    - license: Apache-2.0
+
+environment:
+  contents:
+    keyring:
+      - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    repositories:
+      - https://packages.wolfi.dev/os
+    packages:
+      - build-base
+      - busybox
+      - ca-certificates-bundle
+      - go-1.27
+  environment:
+    # Build with the pinned Go only; never download a toolchain go.mod asks for.
+    GOTOOLCHAIN: local
+
+vars:
+  commit: f62d747d56e9caa6a38ad4bcbc32dbcc3dc1399a
+
+pipeline:
+  - uses: git-checkout
+    with:
+      repository: https://github.com/spiffe/spire
+      tag: v${{package.version}}
+      expected-commit: ${{vars.commit}}
+
+  # Dependency fixes the CVE gate requires (grype, 2026-11-15): go-jose/v4
+  # 4.1.4 (CVE-2026-116587, high) and klauspost/compress 1.19.1
+  # (CVE-2026-116591 / GO-2026-6865, high). go-jose/v3 has no fixed release;
+  # see cve-exceptions.yaml.
+  - uses: go/bump
+    with:
+      deps: github.com/go-jose/go-jose/v4@v4.1.6 github.com/klauspost/compress@v1.20.2
+
+  # Upstream strips the tag's "v" (Makefile): spire-server parses it as semver.
+  - uses: go/build
+    with:
+      go-package: go-1.27
+      packages: ./cmd/spire-server
+      output: spire-server
+      ldflags: -X github.com/spiffe/spire/pkg/common/version.gittag=${{package.version}} -X github.com/spiffe/spire/pkg/common/version.githash=${{vars.commit}}
+
+subpackages:
+  - name: spire-agent-src
+    description: SPIRE agent, built from source by the image factory
+    pipeline:
+      - uses: go/build
+        with:
+          go-package: go-1.27
+          packages: ./cmd/spire-agent
+          output: spire-agent
+          ldflags: -X github.com/spiffe/spire/pkg/common/version.gittag=${{package.version}} -X github.com/spiffe/spire/pkg/common/version.githash=${{vars.commit}}

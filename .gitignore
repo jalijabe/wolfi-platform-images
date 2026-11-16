@@ -1,0 +1,13 @@
+.bin/
+.build/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+node_modules/
+.ash/ash_output/
+# Local signing keys: never commit.
+*.key
+.task/

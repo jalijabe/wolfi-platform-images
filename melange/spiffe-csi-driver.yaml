@@ -1,0 +1,46 @@
+# SPIFFE CSI driver, built from source: Wolfi does not package it.
+# v0.3.0 needs Go 1.27.3 (go.mod).
+package:
+  name: spiffe-csi-driver-src
+  version: "0.3.0"
+  epoch: 0
+  description: SPIFFE CSI driver, built from source by the image factory
+  copyright:
+    - license: Apache-2.0
+
+environment:
+  contents:
+    keyring:
+      - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    repositories:
+      - https://packages.wolfi.dev/os
+    packages:
+      - build-base
+      - busybox
+      - ca-certificates-bundle
+      - go-1.27
+  environment:
+    # Build with the pinned Go only; never download a toolchain go.mod asks for.
+    GOTOOLCHAIN: local
+
+pipeline:
+  - uses: git-checkout
+    with:
+      repository: https://github.com/spiffe/spiffe-csi
+      tag: v${{package.version}}
+      expected-commit: 3d521001e8cb4c7b6f87975cb316d18bf5986035
+
+  # Dependency fixes the CVE gate requires (grype, 2026-11-15): x/net v0.57.0
+  # carries GO-2026-6612 (critical) and GO-2026-6603/6611/6617 (high).
+  - uses: go/bump
+    with:
+      deps: golang.org/x/net@v0.60.0
+
+  # Upstream: CGO_ENABLED=0 go build ./cmd/spiffe-csi-driver (Makefile).
+  - uses: go/build
+    with:
+      go-package: go-1.27
+      packages: ./cmd/spiffe-csi-driver
+      output: spiffe-csi-driver
+    environment:
+      CGO_ENABLED: "0"

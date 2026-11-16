@@ -1,0 +1,63 @@
+# What the factory builds, how strict the CVE gate is, and where and how it
+# publishes. `task images:lint` checks every recipe named here; see README.md.
+
+# Default publishing target. Each image is pushed to <registry>/<name>:<tag>.
+registry: ghcr.io/jalijabe/wolfi-platform-images
+
+# CVE gate: findings at or above this severity block publishing unless
+# cve-exceptions.yaml accepts them (negligible, low, medium, high, critical).
+maxCveSeverity: high
+
+# Architectures to build. Source-built packages (melange) build for the
+# runner's own architecture unless FACTORY_CROSS=1 enables emulation.
+archs: [x86_64, aarch64]
+
+# Keyless signatures: the certificate identity and issuer every published
+# image and release manifest is signed with. Verify against exactly these.
+signing:
+  identity: https://github.com/jalijabe/wolfi-platform-images/.github/workflows/publish.yml@refs/heads/main
+  issuer: https://token.actions.githubusercontent.com
+
+# One entry per image. `tag` is the version of the image's main package.
+# `recipe` is the apko configuration; `package`, when present, is the melange
+# recipe that builds the main package from source. `smoke` runs the
+# entrypoint with `args` from the image's own root filesystem and expects
+# `expect` in the output. `runAsRoot` is required exactly when the recipe runs
+# as uid 0, and says why.
+images:
+  # Wolfi haproxy-3.4 (LTS); -nocaps so it runs with every capability dropped.
+  haproxy:
+    tag: 3.4.7-r1
+    recipe: apko/haproxy.yaml
+    smoke: {args: ["-v"], expect: "HAProxy version 3.4.7"}
+
+  # Wolfi's public SPIRE packages are stale (the CVE gate rejects them), so
+  # SPIRE is built from source.
+  spire-server:
+    tag: 1.15.5-r0
+    recipe: apko/spire-server.yaml
+    package: melange/spire.yaml
+    smoke: {args: ["--version"], expect: "1.15.5"}
+
+  spire-agent:
+    tag: 1.15.5-r0
+    recipe: apko/spire-agent.yaml
+    package: melange/spire.yaml
+    runAsRoot: workload attestation reads other processes' /proc entries (upstream runs it as root)
+    smoke: {args: ["--version"], expect: "1.15.5"}
+
+  # Wolfi ships 0.6.6; TCP SPIFFE mTLS mode needs >= 0.8.
+  spire-controller-manager:
+    tag: 0.8.1-r0
+    recipe: apko/spire-controller-manager.yaml
+    package: melange/spire-controller-manager.yaml
+    smoke: {args: ["--help"], expect: "Usage"}
+
+  # Not packaged by Wolfi.
+  spiffe-csi-driver:
+    tag: 0.3.0-r0
+    recipe: apko/spiffe-csi-driver.yaml
+    package: melange/spiffe-csi-driver.yaml
+    runAsRoot: a CSI node plugin mounts volumes into pod paths on the host (upstream runs it as root)
+    # Go stamps "+dirty": the dependency bump changes go.mod after checkout.
+    smoke: {args: ["--help"], expect: "spiffe-csi-driver (version v0.3.0"}

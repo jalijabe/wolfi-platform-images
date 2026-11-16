@@ -1,0 +1,72 @@
+# AWS Automated Security Helper (pinned in Taskfile.yml). The job fails on
+# actionable findings. Results go to GitHub code scanning (SARIF), the run's job
+# summary and the `ash-reports` artifact.
+name: security-ash
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ash-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ash:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.3"
+          python-version: "3.12"
+      - uses: arduino/setup-task@bfe25a35f5c1f609e1d6153197b3b42a04ae054c # v3.0.0
+        with:
+          version: "3.45.4"
+          repo-token: ${{ github.token }}
+      - name: ASH scan (container mode, all scanners)
+        id: ash
+        continue-on-error: true
+        run: task ash ASH_MODE=container
+      - name: Job summary
+        if: always()
+        run: |
+          if [ -s .ash/ash_output/reports/ash.summary.md ]; then
+            cat .ash/ash_output/reports/ash.summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "ASH produced no summary; the scan did not complete." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      # Fork pull requests get a read-only token and cannot upload; their results stay in the artifact.
+      - name: Upload SARIF to code scanning
+        if: >-
+          always() && hashFiles('.ash/ash_output/reports/ash.sarif') != '' &&
+          (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: github/codeql-action/upload-sarif@8498dc4c2b27cdd99baf0f87955b29ebbf30c78d # v4.39.1
+        with:
+          sarif_file: .ash/ash_output/reports/ash.sarif
+          category: ash
+      - name: Keep reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ash-reports
+          path: .ash/ash_output/reports/
+          if-no-files-found: warn
+      - name: Fail on actionable findings
+        if: steps.ash.outcome == 'failure'
+        run: |
+          echo "ASH reported actionable findings or failed; see the code scanning alerts and the ash-reports artifact." >&2
+          exit 1

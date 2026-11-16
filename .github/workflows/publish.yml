@@ -1,0 +1,146 @@
+# Publish: build, gate, sign keylessly and push to GHCR, then record a signed
+# release manifest and build provenance. Runs only from main, in the `publish`
+# environment (deployments limited to main). Images whose tag is already
+# published and signed by this workflow are reused, not rebuilt.
+#
+# Consumers verify with the identity and issuer in images.yaml, e.g.:
+#   cosign verify \
+#     --certificate-identity https://github.com/jalijabe/wolfi-platform-images/.github/workflows/publish.yml@refs/heads/main \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+#     ghcr.io/jalijabe/wolfi-platform-images/haproxy:3.4.7-r1
+name: publish
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - apko/**
+      - melange/**
+      - images.yaml
+      - cve-exceptions.yaml
+      - imagefactory/**
+      - Taskfile.yml
+      - pyproject.toml
+      - uv.lock
+      - .github/workflows/publish.yml
+      - .github/actions/setup/**
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: publish
+    permissions:
+      contents: write # the GitHub release carrying the manifest
+      packages: write # push to GHCR
+      id-token: write # keyless signing: Fulcio certificate for this workflow's identity
+    outputs:
+      built: ${{ steps.manifest.outputs.built }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: ./.github/actions/setup
+        with:
+          factory: "true"
+      - name: Log in to GHCR
+        env:
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ github.token }}
+        run: printf '%s' "$TOKEN" | .bin/crane auth login ghcr.io -u "$ACTOR" --password-stdin
+      - name: Build, gate, sign and publish
+        run: task images:build SKIP_EXISTING=1
+      - name: Sign the release manifest
+        run: .bin/cosign sign-blob --yes --bundle .build/factory/release.json.sigstore.json .build/factory/release.json
+      - name: List newly built images
+        id: manifest
+        run: |
+          built="$(jq -c '[.images[] | select(.reused | not)
+            | {name: (.references[0] | split("@")[0] | sub(":[^:/]+$"; "")), digest: .digest}]' \
+            .build/factory/release.json)"
+          echo "built=$built" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Images"
+            echo
+            echo "| Image | Tag | Digest | Status |"
+            echo "|---|---|---|---|"
+            jq -r '.images[] | "| \(.name) | \(.tag) | `\(.digest)` | \(if .reused then "reused" else "built" end) |"' \
+              .build/factory/release.json
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Create the GitHub release
+        if: steps.manifest.outputs.built != '[]'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="r$(date -u +%Y.%m.%d)-${GITHUB_RUN_NUMBER}"
+          mkdir -p .build/release
+          cp .build/factory/release.json .build/factory/release.json.sigstore.json .build/release/
+          for f in .build/factory/*/sbom-*.spdx.json; do
+            image="$(basename "$(dirname "$f")")"
+            cp "$f" ".build/release/${image}-$(basename "$f" | sed 's/^sbom-//')"
+          done
+          {
+            echo "Images published from ${GITHUB_SHA}. Verify the manifest with:"
+            echo
+            echo '```sh'
+            echo "cosign verify-blob --bundle release.json.sigstore.json \\"
+            echo "  --certificate-identity https://github.com/${GITHUB_REPOSITORY}/.github/workflows/publish.yml@refs/heads/main \\"
+            echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com release.json"
+            echo '```'
+            echo
+            echo "| Image | Tag | Digest |"
+            echo "|---|---|---|"
+            jq -r '.images[] | "| \(.name) | \(.tag) | `\(.digest)` |"' .build/factory/release.json
+          } > .build/release-notes.md
+          gh release create "$tag" .build/release/* --title "$tag" --notes-file .build/release-notes.md \
+            --target "$GITHUB_SHA"
+      - name: Keep factory results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: factory-results
+          path: |
+            .build/factory/release.json
+            .build/factory/release.json.sigstore.json
+            .build/factory/*/gate.json
+            .build/factory/*/sbom-*.spdx.json
+          if-no-files-found: warn
+
+  # SLSA build provenance for each image this run built, signed with this
+  # workflow's identity and pushed next to the image.
+  provenance:
+    needs: publish
+    if: needs.publish.outputs.built != '[]' && needs.publish.outputs.built != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: publish
+    permissions:
+      packages: write
+      id-token: write
+      attestations: write
+    strategy:
+      matrix:
+        image: ${{ fromJSON(needs.publish.outputs.built) }}
+    steps:
+      - name: Log in to GHCR
+        env:
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ github.token }}
+        run: printf '%s' "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ matrix.image.name }}
+          subject-digest: ${{ matrix.image.digest }}
+          push-to-registry: true

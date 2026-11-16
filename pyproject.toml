@@ -1,0 +1,39 @@
+[project]
+name = "imagefactory"
+version = "0.1.0"
+description = "Build, gate, sign and publish Wolfi-based container images."
+requires-python = ">=3.12,<3.13"
+dependencies = ["pyyaml>=6.0.2"]
+
+[dependency-groups]
+dev = ["pytest>=8.4", "ruff>=0.14", "mypy>=1.18", "types-PyYAML>=6.0"]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["imagefactory"]
+
+[tool.uv]
+# Supply-chain hygiene (dependency cooldown): resolve only releases at least two weeks old.
+exclude-newer = "14 days"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF", "PT"]
+ignore = ["S603", "S607"]  # subprocess calls with fixed argv are the point of this tool
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
