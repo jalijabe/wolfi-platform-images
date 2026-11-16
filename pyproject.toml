@@ -3,6 +3,8 @@ name = "imagefactory"
 version = "0.1.0"
 description = "Build, gate, sign and publish Wolfi-based container images."
 requires-python = ">=3.12,<3.13"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 dependencies = ["pyyaml>=6.0.2"]
 
 [dependency-groups]

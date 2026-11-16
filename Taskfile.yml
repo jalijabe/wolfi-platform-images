@@ -134,7 +134,7 @@ tasks:
   images:build:
     desc: >-
       Build, gate, sign and publish (ONLY=<name>, TARGET=<registry>, KEY=<cosign key file or KMS URI>,
-      ARCH=x86_64,aarch64). Without KEY, signs keylessly with the ambient OIDC identity (CI only).
+      ARCH=<comma-separated list>, default images.yaml). Without KEY, signs keylessly with the ambient OIDC identity (CI only).
       SKIP_EXISTING=1 reuses images already published and signed. Source builds need Docker
     deps: [tools:py, tools:factory]
     cmds:

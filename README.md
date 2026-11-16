@@ -14,7 +14,7 @@ source with [melange](https://github.com/chainguard-dev/melange).
 | `spiffe-csi-driver` | `0.3.0-r0` | built from source | root (CSI node plugin) |
 
 Images are published to `ghcr.io/jalijabe/wolfi-platform-images/<image>:<tag>`
-for `linux/amd64` and `linux/arm64` (source-built images: `linux/amd64` for now).
+for `linux/amd64`. Other architectures can be added when a consumer needs them.
 
 ## Verify before you use
 
@@ -116,3 +116,10 @@ or publish; [`publish.yml`](.github/workflows/publish.yml) runs only from `main`
 ## Security
 
 See [SECURITY.md](SECURITY.md) to report a vulnerability.
+
+## License
+
+The recipes, factory code and workflows in this repository are licensed under
+[Apache-2.0](LICENSE). The software inside each image keeps its own upstream
+license (e.g. HAProxy: GPL-2.0-or-later; SPIRE: Apache-2.0), recorded in the
+image's `org.opencontainers.image.licenses` annotation and its SBOM.

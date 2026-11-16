@@ -8,9 +8,11 @@ registry: ghcr.io/jalijabe/wolfi-platform-images
 # cve-exceptions.yaml accepts them (negligible, low, medium, high, critical).
 maxCveSeverity: high
 
-# Architectures to build. Source-built packages (melange) build for the
-# runner's own architecture unless FACTORY_CROSS=1 enables emulation.
-archs: [x86_64, aarch64]
+# Architectures to build: x86_64 only. Add others (e.g. aarch64) when a
+# consumer needs them; source builds (melange) then need a native runner or
+# FACTORY_CROSS=1 (emulation), and the smoke test runs only on the runner's
+# own architecture.
+archs: [x86_64]
 
 # Keyless signatures: the certificate identity and issuer every published
 # image and release manifest is signed with. Verify against exactly these.

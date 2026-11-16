@@ -82,7 +82,6 @@ def build(target: str, key: Path, out: Path, *extra: str) -> dict[str, Any]:
         "--root", str(REPO),
         "--out", str(out),
         "--bin", os.environ.get("FACTORY_BIN", str(REPO / ".bin")),
-        "--arch", "x86_64,aarch64",
         "--key", str(key),
         "--target", target,
         *extra,
