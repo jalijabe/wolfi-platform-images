@@ -11,3 +11,4 @@ node_modules/
 # Local signing keys: never commit.
 *.key
 .task/
+code-scanning.sarif

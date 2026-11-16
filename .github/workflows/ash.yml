@@ -49,14 +49,19 @@ jobs:
           else
             echo "ASH produced no summary; the scan did not complete." >> "$GITHUB_STEP_SUMMARY"
           fi
+      # Code scanning ignores SARIF suppressions: send it what ASH counts as actionable (unsuppressed,
+      # MEDIUM and above). The full SARIF, with every suppression's reason, stays in ash-reports.
+      - name: Prepare SARIF for code scanning
+        if: always() && hashFiles('.ash/ash_output/reports/ash.sarif') != ''
+        run: uv run --frozen python -m imagefactory.sariffilter .ash/ash_output/reports/ash.sarif code-scanning.sarif
       # Fork pull requests get a read-only token and cannot upload; their results stay in the artifact.
       - name: Upload SARIF to code scanning
         if: >-
-          always() && hashFiles('.ash/ash_output/reports/ash.sarif') != '' &&
+          always() && hashFiles('code-scanning.sarif') != '' &&
           (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
         uses: github/codeql-action/upload-sarif@8498dc4c2b27cdd99baf0f87955b29ebbf30c78d # v4.39.1
         with:
-          sarif_file: .ash/ash_output/reports/ash.sarif
+          sarif_file: code-scanning.sarif
           category: ash
       - name: Keep reports
         if: always()
