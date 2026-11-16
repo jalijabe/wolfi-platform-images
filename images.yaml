@@ -24,14 +24,15 @@ signing:
 # `recipe` is the apko configuration; `package`, when present, is the melange
 # recipe that builds the main package from source. `smoke` runs the
 # entrypoint with `args` from the image's own root filesystem and expects
-# `expect` in the output. `runAsRoot` is required exactly when the recipe runs
+# `expect` in the output; `{version}` stands for the tag's upstream version
+# (3.4.7-r1 -> 3.4.7), so version bumps need no edit here. `runAsRoot` is required exactly when the recipe runs
 # as uid 0, and says why.
 images:
   # Wolfi haproxy-3.4 (LTS); -nocaps so it runs with every capability dropped.
   haproxy:
     tag: 3.4.7-r1
     recipe: apko/haproxy.yaml
-    smoke: {args: ["-v"], expect: "HAProxy version 3.4.7"}
+    smoke: {args: ["-v"], expect: "HAProxy version {version}"}
 
   # Wolfi's public SPIRE packages are stale (the CVE gate rejects them), so
   # SPIRE is built from source.
@@ -39,14 +40,14 @@ images:
     tag: 1.15.5-r0
     recipe: apko/spire-server.yaml
     package: melange/spire.yaml
-    smoke: {args: ["--version"], expect: "1.15.5"}
+    smoke: {args: ["--version"], expect: "{version}"}
 
   spire-agent:
     tag: 1.15.5-r0
     recipe: apko/spire-agent.yaml
     package: melange/spire.yaml
     runAsRoot: workload attestation reads other processes' /proc entries (upstream runs it as root)
-    smoke: {args: ["--version"], expect: "1.15.5"}
+    smoke: {args: ["--version"], expect: "{version}"}
 
   # Wolfi ships 0.6.6; TCP SPIFFE mTLS mode needs >= 0.8.
   spire-controller-manager:
@@ -62,4 +63,4 @@ images:
     package: melange/spiffe-csi-driver.yaml
     runAsRoot: a CSI node plugin mounts volumes into pod paths on the host (upstream runs it as root)
     # Go stamps "+dirty": the dependency bump changes go.mod after checkout.
-    smoke: {args: ["--help"], expect: "spiffe-csi-driver (version v0.3.0"}
+    smoke: {args: ["--help"], expect: "spiffe-csi-driver (version v{version}"}

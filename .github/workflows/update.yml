@@ -1,0 +1,75 @@
+# Update: every day, find newer Wolfi packages and upstream source releases past
+# the 14-day cooldown, apply them (pins, tags, annotations, source commits),
+# re-lock and lint, and open a pull request. CI on that pull request builds,
+# CVE-gates and functionally tests every image, exactly as for any other
+# change; nothing is published unless it passes and the pull request is merged.
+#
+# Pull requests opened with GITHUB_TOKEN do not start other workflows, but
+# workflow_dispatch does, so this workflow dispatches ci.yml and ash.yml on the
+# update branch: their checks land on the pull request's commit and satisfy
+# the required checks. Needs the repository setting "Allow GitHub Actions to
+# create and approve pull requests".
+name: update
+
+on:
+  schedule:
+    - cron: "37 6 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write # push the update branch
+      pull-requests: write # open the pull request, close the one it supersedes
+      actions: write # dispatch CI and ASH on the update branch
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup
+        with:
+          factory: "true"
+      - name: Find and apply updates past the cooldown
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: task update
+      - name: Anything to propose?
+        id: diff
+        run: |
+          if git diff --quiet -- apko melange images.yaml; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No updates past the cooldown." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            cat .build/update/summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Open a pull request and run CI on it
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch="update/$(date -u +%Y%m%d)-${GITHUB_RUN_NUMBER}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add apko melange images.yaml
+          git commit -m "chore(images): update packages and source releases past the cooldown" \
+            -m "Found by the update workflow (run ${GITHUB_RUN_ID}); see the pull request for the list."
+          git push origin "$branch"
+          older="$(gh pr list --state open --json number,headRefName \
+            --jq '.[] | select(.headRefName | startswith("update/")) | .number')"
+          url="$(gh pr create --base main --head "$branch" \
+            --title "chore(images): update packages and source releases past the cooldown" \
+            --body-file .build/update/summary.md)"
+          echo "Opened $url" >> "$GITHUB_STEP_SUMMARY"
+          gh workflow run ci.yml --ref "$branch"
+          gh workflow run ash.yml --ref "$branch"
+          for n in $older; do
+            gh pr close "$n" --delete-branch --comment "Superseded by $url."
+          done

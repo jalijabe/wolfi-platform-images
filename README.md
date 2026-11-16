@@ -142,17 +142,27 @@ CI runs the same targets. Pull requests stage, gate and functionally test
 everything but never sign for real or publish; [`publish.yml`](.github/workflows/publish.yml)
 runs only from `main`.
 
-## Update an image
+## Updates
 
-1. Bump the version in the recipe (`apko/…` pin and `org.opencontainers.image.version`
-   annotation, or `melange/…` version, epoch and `expected-commit`) and the tag in
-   `images.yaml`.
-2. `task images:lock` for Wolfi-only recipes, then `task images:lint`.
-3. `task images:test` until the gate and the functional tests pass. A new image needs
-   functional tests in `tests/functional`, marked `@pytest.mark.image("<name>")`:
-   without passing ones it cannot be published.
-4. Open a pull request. After merge, the publish workflow builds only images whose
-   tag is not yet published and signed, tests them, and promotes them.
+The [update workflow](.github/workflows/update.yml) runs every day (`task update`
+locally). It finds:
+
+- newer builds of every pinned Wolfi package, from Wolfi's package index;
+- newer upstream releases of every source build, from GitHub (no drafts or
+  prereleases), with the release tag's commit,
+
+each **at least 14 days old**, and applies them: pins, tags, version annotations,
+melange version, epoch and `expected-commit`, then re-locks and lints. It opens a
+pull request listing every change and runs CI on it, which builds, CVE-gates and
+functionally tests every image. Nothing is published unless that passes and the
+pull request is merged; then the publish workflow builds only images whose tag is
+new, tests them again on the staged digest, and promotes them.
+
+To change an image by hand: edit the recipe and its tag in `images.yaml`, run
+`task images:lock` (Wolfi-only recipes) and `task images:lint`, then
+`task images:test` until the gate and the functional tests pass. A new image
+needs functional tests in `tests/functional`, marked
+`@pytest.mark.image("<name>")`: without passing ones it cannot be published.
 
 ## Security
 

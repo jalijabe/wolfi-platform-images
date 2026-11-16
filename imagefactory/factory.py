@@ -173,11 +173,23 @@ class GateResult:
 # ---------------------------------------------------------------- plan
 
 
+def version_of(tag: object) -> str:
+    """The upstream version in a tag: 3.4.7-r1 -> 3.4.7 (for smoke expectations)."""
+    return str(tag).rsplit("-r", 1)[0]
+
+
 def plan(catalog: Catalog, only: set[str] | None = None) -> list[Job]:
     """Build jobs for the catalog, in catalog order."""
     jobs: list[Job] = []
     for name, meta in catalog.images.items():
-        smoke = Smoke(tuple(meta["smoke"]["args"]), meta["smoke"]["expect"]) if "smoke" in meta else None
+        smoke = (
+            Smoke(
+                tuple(meta["smoke"]["args"]),
+                str(meta["smoke"]["expect"]).replace("{version}", version_of(meta["tag"])),
+            )
+            if "smoke" in meta
+            else None
+        )
         jobs.append(
             Job(
                 name=name,

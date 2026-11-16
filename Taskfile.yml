@@ -210,6 +210,21 @@ tasks:
         --out {{.BUILD}}/promote --bin {{.BIN}} {{if .KEY}}--key {{.KEY}}{{else}}--keyless{{end}}
         {{if .TARGET}}--target {{.TARGET}}{{end}}
 
+  # ---------------------------------------------------------------- updates
+  update:
+    desc: >-
+      Find newer Wolfi packages and upstream source releases past the 14-day cooldown and apply them
+      (network): pins, tags, annotations, source commits; then re-lock and lint. Writes
+      .build/update/summary.md (the pull request body). The build, CVE gate and functional tests decide
+    deps: [tools:py, tools:factory]
+    cmds:
+      - mkdir -p {{.BUILD}}/update
+      - >-
+        {{.UV}} python -m imagefactory.update --apply
+        --summary {{.BUILD}}/update/summary.md --json {{.BUILD}}/update/changes.json
+      - task: images:lock
+      - task: images:lint
+
   # ---------------------------------------------------------------- status
   status:
     desc: >-

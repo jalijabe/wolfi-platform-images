@@ -131,10 +131,22 @@ def parse_apkindex(blob: bytes) -> dict[str, list[tuple[str, int]]]:
     return out
 
 
-def _version_key(v: str) -> tuple[Any, ...]:
-    """Order versions like 1.15.5, 3.4.7-r1, v0.8.1 (numeric parts numerically)."""
+def version_key(v: str) -> tuple[Any, ...]:
+    """Order versions like 1.15.5, 3.4.7-r1, v0.8.1, 20230201-r31: numeric parts and
+    Wolfi revisions (-rN) numerically, so r100 sorts after r31."""
     parts = re.split(r"[.\-_+]", v.lstrip("v").replace("-r", ".r"))
-    return tuple((0, int(p)) if p.isdigit() else (1, p) for p in parts)
+    key: list[tuple[int, Any]] = []
+    for p in parts:
+        if p.isdigit():
+            key.append((0, int(p)))
+        elif re.fullmatch(r"r\d+", p):
+            key.append((0, int(p[1:])))
+        else:
+            key.append((1, p))
+    return tuple(key)
+
+
+_version_key = version_key
 
 
 @dataclass(frozen=True)
