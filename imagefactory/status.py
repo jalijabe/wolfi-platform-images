@@ -56,11 +56,13 @@ Fetch = Callable[[str], bytes]
 
 
 def http_get(url: str) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": "wolfi-platform-images-status"})  # noqa: S310
+    if not url.startswith("https://"):
+        raise ValueError(f"refusing a non-https URL: {url}")
+    req = urllib.request.Request(url, headers={"User-Agent": "wolfi-platform-images-status"})  # noqa: S310  # nosec B310 - https only, checked above
     token = os.environ.get("GITHUB_TOKEN")
     if token and url.startswith("https://api.github.com/"):
         req.add_header("Authorization", f"Bearer {token}")
-    with urllib.request.urlopen(req, timeout=120) as r:  # noqa: S310 - fixed https URLs
+    with urllib.request.urlopen(req, timeout=120) as r:  # noqa: S310  # nosec B310 - https only, checked above
         data: bytes = r.read()
     return data
 

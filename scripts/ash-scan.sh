@@ -12,9 +12,10 @@ attempts=${ASH_ATTEMPTS:-3}
 backoff=${ASH_RETRY_SECONDS:-60}
 cd "$(dirname "$0")/.."
 
-allow=()
+# cdk-nag is disabled in .ash/.ash.yaml (no CloudFormation or CDK here; see the reason there).
+allow=(--allow-missing cdk-nag)
 if [[ $mode != container ]]; then
-  allow=(--allow-missing cdk-nag,cfn-nag)   # these scanners need container mode
+  allow=(--allow-missing cdk-nag,cfn-nag)   # cfn-nag needs container mode
 fi
 
 for ((i = 1; i <= attempts; i++)); do

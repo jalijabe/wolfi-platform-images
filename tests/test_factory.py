@@ -6,6 +6,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import shutil
+import string
 import subprocess
 import sys
 import tarfile
@@ -703,3 +704,23 @@ def test_promote_command_refuses_without_functional_results(tmp_path: Path) -> N
             "--out", str(tmp_path / "out"), "--keyless", "--target", PUBLIC]  # fmt: skip
     with pytest.raises(SystemExit, match="refusing to promote"):
         main(args)
+
+
+# ---------------------------------------------------------------- functional-test manifests
+
+
+@pytest.mark.parametrize("path", sorted((REPO / "tests" / "functional" / "k8s").rglob("*.yaml")), ids=str)
+def test_kubernetes_manifests_parse(path: Path) -> None:
+    text = string.Template(path.read_text()).substitute(
+        {
+            k: "img"
+            for k in ("SERVER_IMAGE", "AGENT_IMAGE", "CONTROLLER_IMAGE", "CSI_IMAGE", "REGISTRAR_IMAGE")
+        }
+    )
+    docs = [d for d in yaml.safe_load_all(text) if d]
+    assert docs
+    for d in docs:
+        assert d["apiVersion"], d
+        assert d["kind"], d
+        for value in (d.get("metadata", {}).get("annotations") or {}).values():
+            assert isinstance(value, str), value

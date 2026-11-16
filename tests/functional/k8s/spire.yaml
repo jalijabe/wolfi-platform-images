@@ -29,13 +29,11 @@ rules:
   - apiGroups: [""]
     resources: ["nodes", "pods"]
     verbs: ["get"]
-  # spire-controller-manager (upstream config/rbac/role.yaml at v0.8.1).
+  # spire-controller-manager (upstream config/rbac/role.yaml at v0.8.1, minus
+  # validatingwebhookconfigurations: the webhook is disabled in this test).
   - apiGroups: [""]
     resources: ["endpoints", "namespaces", "nodes", "pods"]
     verbs: ["get", "list", "watch"]
-  - apiGroups: ["admissionregistration.k8s.io"]
-    resources: ["validatingwebhookconfigurations"]
-    verbs: ["get", "list", "patch", "watch"]
   - apiGroups: ["spire.spiffe.io"]
     resources: ["clusterfederatedtrustdomains", "clusterspiffeids", "clusterstaticentries"]
     verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
@@ -164,6 +162,13 @@ kind: StatefulSet
 metadata:
   name: spire-server
   namespace: spire-system
+  annotations:
+    # This throwaway test cluster runs images loaded into kind by digest (Never pulled).
+    checkov.io/skip1: "CKV_K8S_14=Image placeholders are filled with images loaded into kind by digest"
+    checkov.io/skip2: "CKV_K8S_43=Image placeholders are filled with images loaded into kind by digest"
+    checkov.io/skip3: "CKV_K8S_15=Images are loaded into kind; pulling them is not possible"
+    checkov.io/skip4: "CKV2_K8S_6=Single-node throwaway test cluster; network policy is the deployer's choice"
+    checkov.io/skip5: "CKV_K8S_38=The server (k8s_psat token reviews) and controller manager call the Kubernetes API"
 spec:
   replicas: 1
   serviceName: spire-server
@@ -195,6 +200,15 @@ spec:
               path: /ready
               port: 8080
             periodSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: "1", memory: 512Mi}
           securityContext:
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
@@ -222,6 +236,15 @@ spec:
               path: /readyz
               port: 8083
             periodSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8083
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 25m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 256Mi}
           securityContext:
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
@@ -328,6 +351,17 @@ kind: DaemonSet
 metadata:
   name: spire-agent
   namespace: spire-system
+  annotations:
+    # This throwaway test cluster runs images loaded into kind by digest (Never pulled).
+    checkov.io/skip1: "CKV_K8S_14=Image placeholders are filled with images loaded into kind by digest"
+    checkov.io/skip2: "CKV_K8S_43=Image placeholders are filled with images loaded into kind by digest"
+    checkov.io/skip3: "CKV_K8S_15=Images are loaded into kind; pulling them is not possible"
+    checkov.io/skip4: "CKV2_K8S_6=Single-node throwaway test cluster; network policy is the deployer's choice"
+    checkov.io/skip5: "CKV_K8S_38=The k8s workload attestor authenticates to the kubelet with the service account token"
+    checkov.io/skip6: "CKV_K8S_17=Workload attestation reads the processes of every pod on the node (upstream runs it so)"
+    checkov.io/skip7: "CKV_K8S_19=The agent reaches the kubelet on the node's loopback (upstream runs it so)"
+    checkov.io/skip8: "CKV_K8S_23=The image runs as root by design: workload attestation reads other users' /proc entries"
+    checkov.io/skip9: "CKV_K8S_40=The image runs as root by design: workload attestation reads other users' /proc entries"
 spec:
   selector:
     matchLabels:
@@ -338,6 +372,9 @@ spec:
         app: spire-agent
     spec:
       serviceAccountName: spire-agent
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       hostPID: true
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
@@ -357,6 +394,16 @@ spec:
               path: /ready
               port: 8088
             periodSeconds: 2
+          livenessProbe:
+            httpGet:
+              host: 127.0.0.1
+              path: /live
+              port: 8088
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 25m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 256Mi}
           securityContext:
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
@@ -408,6 +455,18 @@ kind: DaemonSet
 metadata:
   name: spiffe-csi-driver
   namespace: spire-system
+  annotations:
+    # This throwaway test cluster runs images loaded into kind by digest (Never pulled).
+    checkov.io/skip1: "CKV_K8S_14=Image placeholders are filled with images loaded into kind by digest"
+    checkov.io/skip2: "CKV_K8S_43=Image placeholders are filled with images loaded into kind by digest"
+    checkov.io/skip3: "CKV_K8S_15=Images are loaded into kind; pulling them is not possible"
+    checkov.io/skip4: "CKV2_K8S_6=Single-node throwaway test cluster; network policy is the deployer's choice"
+    checkov.io/skip5: "CKV_K8S_16=A CSI node plugin needs privileged mode for Bidirectional mount propagation"
+    checkov.io/skip6: "CKV_K8S_20=Implied by privileged mode, which a CSI node plugin needs"
+    checkov.io/skip7: "CKV_K8S_23=The image runs as root by design: it mounts volumes into pod paths on the host"
+    checkov.io/skip8: "CKV_K8S_40=The image runs as root by design: it mounts volumes into pod paths on the host"
+    checkov.io/skip9: "CKV_K8S_8=The driver serves no health endpoint; the registrar's /healthz covers the socket"
+    checkov.io/skip10: "CKV_K8S_9=The driver serves no health endpoint; the registrar's /healthz covers the socket"
 spec:
   selector:
     matchLabels:
@@ -418,6 +477,10 @@ spec:
         app: spiffe-csi-driver
     spec:
       serviceAccountName: spiffe-csi-driver
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: spiffe-csi-driver
           image: ${CSI_IMAGE}
@@ -437,6 +500,9 @@ spec:
             capabilities:
               drop: ["ALL"]
             privileged: true
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {cpu: 200m, memory: 128Mi}
           volumeMounts:
             - name: agent-sockets
               mountPath: /spire-agent-socket
@@ -454,6 +520,25 @@ spec:
             - /spiffe-csi/csi.sock
             - -kubelet-registration-path
             - /var/lib/kubelet/plugins/csi.spiffe.io/csi.sock
+            - -http-endpoint
+            - 0.0.0.0:9809
+          ports:
+            - name: healthz
+              containerPort: 9809
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {cpu: 100m, memory: 64Mi}
           securityContext:
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false

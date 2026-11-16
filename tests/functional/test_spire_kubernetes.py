@@ -50,7 +50,10 @@ class Cluster:
         return r.stdout + (r.stderr if not check else "")
 
     def apply(self, manifest: str) -> None:
-        self.kubectl("apply", "-f", "-", stdin=manifest)
+        r = run(tool("kubectl"), "--kubeconfig", str(self.kubeconfig), "apply", "-f", "-",
+                check=False, input=manifest)  # fmt: skip
+        if r.returncode != 0:
+            raise AssertionError(f"kubectl apply failed:\n{r.stderr}")
 
     def server(self, *args: str) -> str:
         return self.kubectl("-n", "spire-system", "exec", "spire-server-0", "-c", "spire-server", "--",

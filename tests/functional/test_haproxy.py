@@ -60,7 +60,7 @@ listen stats
 
 def get(url: str) -> tuple[int, dict[str, str], str]:
     try:
-        with urllib.request.urlopen(url, timeout=5) as r:  # noqa: S310 - http to a local test container
+        with urllib.request.urlopen(url, timeout=5) as r:  # noqa: S310  # nosec B310 - http to a local test container
             return r.status, {k.lower(): v for k, v in r.headers.items()}, r.read().decode()
     except urllib.error.HTTPError as e:
         return e.code, {k.lower(): v for k, v in e.headers.items()}, e.read().decode()
