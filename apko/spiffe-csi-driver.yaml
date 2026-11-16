@@ -1,0 +1,37 @@
+# SPIFFE CSI driver. Runs as root, as upstream's image does: a CSI node
+# plugin mounts volumes into pods' paths on the host.
+#
+# The main package is built from source by melange (melange/) into a local
+# repository the factory appends at build time; Wolfi supplies the base
+# layout and CA bundle (and glibc where the binary links it). No shell and no
+# package manager in the image.
+contents:
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  repositories:
+    - https://packages.wolfi.dev/os
+  packages:
+    - wolfi-baselayout=20230201-r31
+    - ca-certificates-bundle=20261020-r0
+    - spiffe-csi-driver-src=0.3.0-r0
+
+accounts:
+  groups:
+    - groupname: nonroot
+      gid: 65532
+  users:
+    - username: nonroot
+      uid: 65532
+      gid: 65532
+  run-as: "0"
+
+entrypoint:
+  command: /usr/bin/spiffe-csi-driver
+
+annotations:
+  org.opencontainers.image.version: 0.3.0-r0
+  org.opencontainers.image.source: https://github.com/spiffe/spiffe-csi
+  org.opencontainers.image.licenses: Apache-2.0
+
+archs:
+  - x86_64

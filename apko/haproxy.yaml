@@ -1,0 +1,43 @@
+# HAProxy from Wolfi packages.
+#
+# haproxy-3.4 is an LTS branch (fixes until about Q2 2031). Wolfi's public
+# haproxy-3.2 stopped at 3.2.9 with known critical CVEs fixed only in 3.2.20,
+# which the CVE gate rejects. The -nocaps variant has no file capabilities:
+# run it with every capability dropped and bind only ports above 1024; a
+# binary with file capabilities fails to exec under no_new_privs.
+#
+# Every package is pinned twice: the version here (reviewable) and the lock
+# file next to it (full closure with checksums; `task images:lock`).
+contents:
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  repositories:
+    - https://packages.wolfi.dev/os
+  packages:
+    - wolfi-baselayout=20230201-r31
+    - ca-certificates-bundle=20261020-r0
+    - haproxy-3.4-nocaps=3.4.7-r1
+
+accounts:
+  groups:
+    - groupname: nonroot
+      gid: 65532
+  users:
+    - username: nonroot
+      uid: 65532
+      gid: 65532
+  run-as: "65532"
+
+entrypoint:
+  command: /usr/bin/haproxy
+# Master-worker, foreground; mount the configuration at this path.
+cmd: -W -db -f /usr/local/etc/haproxy/haproxy.cfg
+
+annotations:
+  # The image tag: the version of the main package (checked by `images lint`).
+  org.opencontainers.image.version: 3.4.7-r1
+  org.opencontainers.image.source: https://git.haproxy.org/git/haproxy-3.4.git
+  org.opencontainers.image.licenses: GPL-2.0-or-later
+
+archs:
+  - x86_64

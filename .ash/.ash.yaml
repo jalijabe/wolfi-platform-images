@@ -1,0 +1,45 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/awslabs/automated-security-helper/refs/tags/v3.7.1/automated_security_helper/schemas/AshConfig.json
+# ASH configuration (version pinned in Taskfile.yml: ASH_VERSION).
+# Rule: suppress a finding only with a written reason, scoped as narrowly as
+# the scanner allows (rule ID + path, plus lines where they are stable).
+# Paths are fnmatch globs with `**` support, matched case-insensitively.
+project_name: wolfi-platform-images
+fail_on_findings: true
+global_settings:
+  severity_threshold: MEDIUM
+  ignore_paths:
+    - path: '**/node_modules/**'
+      reason: 'Third-party npm dependencies installed from the pinned lockfile (tools/mermaid, a docs-lint tool that only renders our own Markdown); not our source and never shipped.'
+    - path: '.venv/**'
+      reason: 'Third-party Python environment created by uv from uv.lock; not our source.'
+    - path: '.bin/**'
+      reason: >-
+        Tool binaries (actionlint, gitleaks and the factory tools) built by `task tools` and
+        `task tools:factory` at pinned upstream versions; never shipped. Their dependency CVEs are
+        fixed by bumping the pins in Taskfile.yml.
+    - path: '.build/**'
+      reason: 'Factory outputs (SBOMs, scan reports, melange packages) regenerated on every build.'
+  suppressions:
+    - rule_id: 'SECRET-HEX-HIGH-ENTROPY-STRING'
+      path: 'Taskfile.yml'
+      reason: >-
+        Supply-chain pins, not secrets: the kubectl download's published SHA-256 (KUBECTL_SHA256,
+        verified with sha256sum) and the kind node image digest (KIND_NODE_IMAGE).
+    - rule_id: 'SECRET-BASE64-HIGH-ENTROPY-STRING'
+      path: 'apko/*.lock.json'
+      reason: >-
+        apko lock files record each package's APK checksum and signature digests plus the recipe's
+        SHA-256 (base64) so builds are reproducible and tamper-evident. Public integrity data from
+        packages.wolfi.dev, high-entropy by design; no secret.
+    - rule_id: 'SECRET-HEX-HIGH-ENTROPY-STRING'
+      path: 'melange/*.yaml'
+      reason: >-
+        `expected-commit` / `vars.commit` are the upstream git commit SHAs each source build is pinned
+        to (checked by `images lint`); public supply-chain pins, not secrets.
+scanners:
+  cdk-nag:
+    # This repository has no CloudFormation or CDK templates. cdk-nag treats every YAML file as one
+    # and fails on the multi-document Kubernetes manifests in tests/functional/k8s (which checkov
+    # scans). scripts/ash-scan.sh allows exactly this scanner to be skipped; any other scanner that
+    # does not run still fails the scan.
+    enabled: false

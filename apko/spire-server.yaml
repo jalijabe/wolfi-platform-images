@@ -1,0 +1,36 @@
+# SPIRE server. Upstream runs it as uid 1000; here the nonroot user.
+#
+# The main package is built from source by melange (melange/) into a local
+# repository the factory appends at build time; Wolfi supplies the base
+# layout and CA bundle (and glibc where the binary links it). No shell and no
+# package manager in the image.
+contents:
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  repositories:
+    - https://packages.wolfi.dev/os
+  packages:
+    - wolfi-baselayout=20230201-r31
+    - ca-certificates-bundle=20261020-r0
+    - spire-server-src=1.15.5-r0
+
+accounts:
+  groups:
+    - groupname: nonroot
+      gid: 65532
+  users:
+    - username: nonroot
+      uid: 65532
+      gid: 65532
+  run-as: "65532"
+
+entrypoint:
+  command: /usr/bin/spire-server run
+
+annotations:
+  org.opencontainers.image.version: 1.15.5-r0
+  org.opencontainers.image.source: https://github.com/spiffe/spire
+  org.opencontainers.image.licenses: Apache-2.0
+
+archs:
+  - x86_64

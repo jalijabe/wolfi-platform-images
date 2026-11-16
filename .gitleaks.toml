@@ -1,0 +1,16 @@
+# gitleaks config: default rules plus path allowlists, each with a reason.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Generated, gitignored and third-party trees"
+# `gitleaks dir` ignores .gitignore, so generated and third-party trees are listed
+# here. All are gitignored and never committed; ASH output contains scanner
+# hashes that resemble tokens.
+paths = [
+  '''(^|/)node_modules/''',
+  '''(^|/)\.venv/''',
+  '''(^|/)\.bin/''',
+  '''(^|/)\.build/''',
+  '''^\.ash/ash_output/''',
+]

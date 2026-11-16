@@ -1,0 +1,72 @@
+# CI on pull requests and pushes to main. Jobs call Task targets only, so local
+# runs and CI run the same commands. Nothing here signs or publishes: pull
+# requests get no OIDC token and no write access (see publish.yml).
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - run: task lint
+
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - run: task test
+
+  # The same pipeline as publishing, minus the real target: build every recipe
+  # (apko; source builds with melange on Docker), smoke-test, SBOM and CVE-gate
+  # it into a local staging registry (throwaway key), run the functional tests
+  # against those digests (Docker and kind), then verify signatures, refusals,
+  # reuse and promotion. Real publishing is publish.yml.
+  images:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # A fresh grype vulnerability database is about 3.3 GB and the factory Go
+      # builds are large; reclaim the preinstalled SDKs the factory never uses.
+      - name: Free runner disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: ./.github/actions/setup
+        with:
+          factory: "true"
+      - run: task images:test
+      - name: Keep test results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: images-test
+          path: |
+            .build/stage/release.json
+            .build/stage/functional.json
+            .build/stage/*/gate.json
+          if-no-files-found: warn

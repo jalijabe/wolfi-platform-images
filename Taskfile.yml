@@ -1,0 +1,241 @@
+# Single entrypoint for local development and CI: workflows call these targets
+# only, so a green local run means a green CI run.
+version: '3'
+
+vars:
+  BIN: '{{.ROOT_DIR}}/.bin'
+  BUILD: '{{.ROOT_DIR}}/.build'
+  # Pinned tool versions, each at least two weeks old when pinned. Bump deliberately, in their own PR.
+  ACTIONLINT_VERSION: v1.7.12
+  GITLEAKS_VERSION: v8.30.1
+  ASH_VERSION: v3.7.1
+  APKO_VERSION: v1.4.15
+  MELANGE_VERSION: v0.64.0
+  COSIGN_VERSION: v3.1.4
+  CRANE_VERSION: v0.22.1
+  GRYPE_VERSION: v0.121.0
+  SYFT_VERSION: v1.55.0
+  # Functional tests: kind and its node image (pinned by digest), kubectl (checksum-verified).
+  KIND_VERSION: v0.33.0
+  KIND_NODE_IMAGE: kindest/node:v1.36.4@sha256:099e049362a1526b2db71494e1947aae99bd16290d7c895f2b7ea312e3cbfaed
+  KUBECTL_VERSION: v1.36.6
+  KUBECTL_SHA256: 29818b6729dc9262b692307470d0558d027725e738be5dd47c760261868a2634
+  UV: uv run --project {{.ROOT_DIR}} --frozen
+  MMDC: '{{.ROOT_DIR}}/tools/mermaid/node_modules/.bin/mmdc'
+  FACTORY: '{{.UV}} python -m imagefactory'
+  STAGE: '{{.BUILD}}/stage'
+  PAGES_URL: https://jalijabe.github.io/wolfi-platform-images
+  STAGE_ADDR: '{{.STAGE_ADDR | default "127.0.0.1:5001"}}'
+  STAGE_REF: 'localhost:{{splitList ":" .STAGE_ADDR | last}}'
+
+tasks:
+  default:
+    cmds: [task --list]
+
+  # ---------------------------------------------------------------- tools
+  tools:
+    desc: Install the pinned lint tools into .bin/ and sync the Python and Node environments (factory tools install on demand)
+    deps: [tools:actionlint, tools:gitleaks, tools:py, tools:mermaid]
+
+  tools:actionlint:
+    internal: true
+    run: once
+    cmds: ['GOBIN={{.BIN}} go install github.com/rhysd/actionlint/cmd/actionlint@{{.ACTIONLINT_VERSION}}']
+    status: ['{{.BIN}}/actionlint -version 2>/dev/null | grep -q "{{.ACTIONLINT_VERSION}}"']
+
+  tools:gitleaks:
+    internal: true
+    run: once
+    cmds: ['GOBIN={{.BIN}} go install github.com/zricethezav/gitleaks/v8@{{.GITLEAKS_VERSION}}']
+    status: ['test -x {{.BIN}}/gitleaks']
+
+  tools:factory:
+    desc: Install the pinned factory tools (apko, melange, cosign, crane, grype, syft) into .bin/
+    run: once
+    cmds:
+      - GOBIN={{.BIN}} go install chainguard.dev/apko@{{.APKO_VERSION}}
+      - GOBIN={{.BIN}} go install chainguard.dev/melange@{{.MELANGE_VERSION}}
+      - GOBIN={{.BIN}} go install github.com/sigstore/cosign/v3/cmd/cosign@{{.COSIGN_VERSION}}
+      - GOBIN={{.BIN}} go install github.com/google/go-containerregistry/cmd/crane@{{.CRANE_VERSION}}
+      - GOBIN={{.BIN}} go install github.com/anchore/grype/cmd/grype@{{.GRYPE_VERSION}}
+      - GOBIN={{.BIN}} go install github.com/anchore/syft/cmd/syft@{{.SYFT_VERSION}}
+      - printf '%s\n' {{.APKO_VERSION}} {{.MELANGE_VERSION}} {{.COSIGN_VERSION}} {{.CRANE_VERSION}} {{.GRYPE_VERSION}} {{.SYFT_VERSION}} > {{.BIN}}/.factory-versions
+    status:
+      - test "$(cat {{.BIN}}/.factory-versions 2>/dev/null)" = "$(printf '%s\n' {{.APKO_VERSION}} {{.MELANGE_VERSION}} {{.COSIGN_VERSION}} {{.CRANE_VERSION}} {{.GRYPE_VERSION}} {{.SYFT_VERSION}})"
+
+  tools:functest:
+    desc: Install the pinned functional-test tools (kind, kubectl) into .bin/
+    run: once
+    cmds:
+      - GOBIN={{.BIN}} go install sigs.k8s.io/kind@{{.KIND_VERSION}}
+      - curl -fsSL -o {{.BIN}}/kubectl https://dl.k8s.io/release/{{.KUBECTL_VERSION}}/bin/linux/amd64/kubectl
+      - echo "{{.KUBECTL_SHA256}}  {{.BIN}}/kubectl" | sha256sum -c -
+      - chmod +x {{.BIN}}/kubectl
+    status:
+      - '{{.BIN}}/kind version 2>/dev/null | grep -q "kind {{.KIND_VERSION}} "'
+      - echo "{{.KUBECTL_SHA256}}  {{.BIN}}/kubectl" | sha256sum -c - >/dev/null 2>&1
+
+  tools:py:
+    internal: true
+    run: once
+    cmds: [uv sync --frozen]
+    sources: [uv.lock, pyproject.toml]
+
+  tools:mermaid:
+    internal: true
+    run: once
+    dir: tools/mermaid
+    cmds:
+      - npm ci --no-audit --no-fund
+      # npm does not run puppeteer's postinstall by default; fetch its pinned browser explicitly.
+      - ./node_modules/.bin/puppeteer browsers install chrome-headless-shell
+    status: ['test -x {{.MMDC}}']
+
+  # ---------------------------------------------------------------- lint
+  lint:
+    desc: Run every linter (Python, workflows, secrets, Mermaid, recipes)
+    deps: [lint:py, lint:actions, lint:secrets, lint:mermaid, images:lint]
+
+  lint:py:
+    deps: [tools:py]
+    cmds:
+      - '{{.UV}} ruff check .'
+      - '{{.UV}} ruff format --check .'
+      - '{{.UV}} mypy --strict imagefactory tests'
+
+  lint:actions:
+    deps: [tools:actionlint]
+    cmds: ['{{.BIN}}/actionlint']
+
+  lint:secrets:
+    deps: [tools:gitleaks]
+    cmds: ['{{.BIN}}/gitleaks dir --redact --no-banner --config .gitleaks.toml .']
+
+  lint:mermaid:
+    desc: Prove every Mermaid block in the Markdown parses
+    deps: [tools:mermaid, tools:py]
+    cmds:
+      - >-
+        {{.UV}} python -m imagefactory.mermaidlint --root {{.ROOT_DIR}}
+        --mmdc {{.MMDC}} --puppeteer-config tools/mermaid/puppeteer.json
+
+  # ---------------------------------------------------------------- test
+  test:
+    desc: Unit tests (offline)
+    deps: [tools:py]
+    cmds: ['{{.UV}} pytest']
+
+  # ---------------------------------------------------------------- images
+  images:lint:
+    desc: Check images.yaml, the recipes and cve-exceptions.yaml offline (pins, tags, locks, users, source commits)
+    deps: [tools:py]
+    cmds: ['{{.FACTORY}} lint']
+
+  images:plan:
+    desc: Print the build plan (ONLY=<name>)
+    deps: [tools:py]
+    cmds: ['{{.FACTORY}} plan {{if .ONLY}}--only {{.ONLY}}{{end}}']
+
+  images:lock:
+    desc: Re-resolve the Wolfi-only recipes' lock files (network); review the diff, then run images:lint
+    deps: [tools:py, tools:factory]
+    cmds:
+      - >-
+        for r in $({{.FACTORY}} lockable);
+        do (cd "$(dirname "$r")" && {{.BIN}}/apko lock "$(basename "$r")") || exit 1; done
+
+  # Every build is staged, functionally tested, then promoted: nothing is
+  # published that has not passed the CVE gate and its functional tests, and
+  # what is published is exactly the digest that was tested.
+  images:registry:
+    desc: Start the local staging registry (STAGE_ADDR, default 127.0.0.1:5001, own session) unless it is already up
+    deps: [tools:factory]
+    cmds:
+      - mkdir -p {{.BUILD}}/registry
+      - >-
+        curl -fs http://{{.STAGE_ADDR}}/v2/ >/dev/null ||
+        setsid -f {{.BIN}}/crane registry serve --address {{.STAGE_ADDR}} --disk {{.BUILD}}/registry
+        > {{.BUILD}}/registry.log 2>&1
+      - for i in $(seq 1 50); do curl -fs http://{{.STAGE_ADDR}}/v2/ >/dev/null && exit 0; sleep 0.2; done; exit 1
+
+  images:stage:
+    desc: >-
+      Build, smoke-test, SBOM and CVE-gate every image (ONLY=<name>) and publish it to the local staging
+      registry, signed with a throwaway key; writes .build/stage/release.json. REUSE_FROM=<registry> (or
+      REUSE_PUBLISHED=1: the catalog's registry) skips images already published there and signed by the
+      catalog's keyless identity. Source builds need Docker
+    deps: [tools:py, tools:factory, images:registry]
+    cmds:
+      - mkdir -p {{.STAGE}}
+      - test -f {{.STAGE}}/cosign.key || (cd {{.STAGE}} && COSIGN_PASSWORD= {{.BIN}}/cosign generate-key-pair >/dev/null)
+      - >-
+        COSIGN_PASSWORD= {{.FACTORY}} build --out {{.STAGE}} --bin {{.BIN}} --key {{.STAGE}}/cosign.key
+        --target {{.STAGE_REF}} {{if .ONLY}}--only {{.ONLY}}{{end}} {{if .ARCH}}--arch {{.ARCH}}{{end}}
+        {{if .REUSE_FROM}}--reuse-from {{.REUSE_FROM}}{{end}} {{if .REUSE_PUBLISHED}}--reuse-published{{end}}
+
+  images:functest:
+    desc: >-
+      Functional tests (Docker, kind): run the staged images and prove they work; writes
+      .build/stage/functional.json, which promote requires
+    deps: [tools:py, tools:factory, tools:functest]
+    cmds:
+      - >-
+        FACTORY_RELEASE={{.STAGE}}/release.json FUNCTIONAL_REPORT={{.STAGE}}/functional.json
+        FACTORY_BIN={{.BIN}} FUNCTEST_KIND_NODE={{.KIND_NODE_IMAGE}} {{.UV}} pytest -v tests/functional
+
+  images:verify:
+    desc: Integration tests against the staged build (signatures, refusals, reuse, promote)
+    deps: [tools:py, tools:factory]
+    cmds:
+      - >-
+        FACTORY_INTEGRATION=1 FACTORY_RELEASE={{.STAGE}}/release.json FACTORY_KEY={{.STAGE}}/cosign.key
+        FUNCTIONAL_REPORT={{.STAGE}}/functional.json FACTORY_BIN={{.BIN}} {{.UV}} pytest -v tests/test_integration.py
+
+  images:test:
+    desc: Stage every image, run the functional tests, then the integration tests (what CI runs)
+    cmds:
+      - task: images:stage
+      - task: images:functest
+      - task: images:verify
+
+  images:promote:
+    desc: >-
+      Copy the staged, functionally tested images to TARGET (default images.yaml) and sign them there:
+      KEY=<cosign key file or KMS URI>, or keyless with the ambient OIDC identity (CI only). Refuses any
+      image without passing functional tests
+    deps: [tools:py, tools:factory]
+    cmds:
+      - >-
+        {{.FACTORY}} promote --release {{.STAGE}}/release.json --functional {{.STAGE}}/functional.json
+        --out {{.BUILD}}/promote --bin {{.BIN}} {{if .KEY}}--key {{.KEY}}{{else}}--keyless{{end}}
+        {{if .TARGET}}--target {{.TARGET}}{{end}}
+
+  # ---------------------------------------------------------------- status
+  status:
+    desc: >-
+      Measure the published images (freshness, a fresh CVE scan, signatures, functional tests) and write
+      the status site to .build/site (network; GitHub CLI for the release manifests)
+    deps: [tools:py, tools:factory, tools:functest]
+    vars:
+      OUT: '{{.BUILD}}/status'
+    cmds:
+      - rm -rf {{.OUT}} && mkdir -p {{.OUT}}/releases
+      - '{{.UV}} python -m imagefactory.status published --bin {{.BIN}} --out {{.OUT}}/current.json'
+      # Failures are recorded in the report and shown on the page; they do not stop the measurement.
+      - >-
+        FACTORY_RELEASE={{.OUT}}/current.json FUNCTIONAL_REPORT={{.OUT}}/functional.json FACTORY_BIN={{.BIN}}
+        FUNCTEST_KIND_NODE={{.KIND_NODE_IMAGE}} {{.UV}} pytest -q tests/functional || true
+      - >-
+        for t in $(gh release list --limit 200 --json tagName --jq '.[].tagName');
+        do gh release download "$t" --pattern release.json --dir "{{.OUT}}/releases/$t" || exit 1; done
+      - curl -fsSL -o {{.OUT}}/previous.json {{.PAGES_URL}}/status.json || true
+      - >-
+        {{.UV}} python -m imagefactory.status status --bin {{.BIN}} --current {{.OUT}}/current.json
+        --functional {{.OUT}}/functional.json --releases {{.OUT}}/releases --previous {{.OUT}}/previous.json
+        --site {{.BUILD}}/site
+
+  # ---------------------------------------------------------------- security
+  ash:
+    desc: AWS Automated Security Helper scan; fails closed if ASH did not actually scan (SARIF in .ash/ash_output/reports/)
+    deps: [tools:py]
+    cmds: ['scripts/ash-scan.sh {{.ASH_MODE | default "container"}} {{.ASH_VERSION}}']

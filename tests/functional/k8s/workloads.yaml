@@ -1,0 +1,65 @@
+# Workloads for the functional test. The controller manager registers pods
+# labelled spiffe=enabled; the CSI driver mounts the Workload API into both
+# pods, but only the labelled one may get an identity. The spire-agent image
+# serves as the client (`spire-agent api watch`), running unprivileged.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: functest
+---
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: functest
+spec:
+  spiffeIDTemplate: "spiffe://{{ .TrustDomain }}/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}"
+  podSelector:
+    matchLabels:
+      spiffe: enabled
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: with-identity
+  namespace: functest
+  labels:
+    spiffe: enabled
+  annotations:
+    checkov.io/skip1: "CKV_K8S_14=The image placeholder is filled with an image loaded into kind by digest"
+    checkov.io/skip2: "CKV_K8S_43=The image placeholder is filled with an image loaded into kind by digest"
+    checkov.io/skip3: "CKV_K8S_15=Images are loaded into kind; pulling them is not possible"
+    checkov.io/skip4: "CKV2_K8S_6=Single-node throwaway test cluster; network policy is the deployer's choice"
+    checkov.io/skip5: "CKV_K8S_8=A short-lived test client; its log is the assertion"
+    checkov.io/skip6: "CKV_K8S_9=A short-lived test client; its log is the assertion"
+spec:
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    # Streams from the Workload API, as real workloads do: retries until the
+    # identity arrives, then prints each SVID it receives.
+    - name: watch
+      image: ${AGENT_IMAGE}
+      imagePullPolicy: Never
+      command: ["/usr/bin/spire-agent"]
+      args: ["api", "watch", "-socketPath", "/spiffe-workload-api/spire-agent.sock"]
+      securityContext:
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests: {cpu: 10m, memory: 32Mi}
+        limits: {cpu: 100m, memory: 64Mi}
+      volumeMounts:
+        - name: spiffe-workload-api
+          mountPath: /spiffe-workload-api
+          readOnly: true
+  volumes:
+    - name: spiffe-workload-api
+      csi:
+        driver: csi.spiffe.io
+        readOnly: true

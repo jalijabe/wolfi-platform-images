@@ -1,0 +1,159 @@
+# Publish: stage → functional test → promote. Every image is built, smoke-
+# tested, SBOM'd and CVE-gated into a local staging registry; the functional
+# tests run against those exact digests; only then are the tested digests
+# copied to GHCR, signed keylessly there and recorded in a signed release
+# manifest with build provenance. Nothing untested is published, and what is
+# published is byte-for-byte what was tested.
+#
+# Runs only from main, in the `publish` environment (deployments limited to
+# main). Images whose tag is already published and signed by this workflow are
+# reused, not rebuilt. Consumers verify with the identity in images.yaml:
+#   cosign verify \
+#     --certificate-identity https://github.com/jalijabe/wolfi-platform-images/.github/workflows/publish.yml@refs/heads/main \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+#     ghcr.io/jalijabe/wolfi-platform-images/haproxy:3.4.7-r1
+name: publish
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - apko/**
+      - melange/**
+      - images.yaml
+      - cve-exceptions.yaml
+      - imagefactory/**
+      - tests/functional/**
+      - Taskfile.yml
+      - pyproject.toml
+      - uv.lock
+      - .github/workflows/publish.yml
+      - .github/actions/setup/**
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    environment: publish
+    permissions:
+      contents: write # the GitHub release carrying the manifest
+      packages: write # push to GHCR
+      id-token: write # keyless signing: Fulcio certificate for this workflow's identity
+    outputs:
+      built: ${{ steps.manifest.outputs.built }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: ./.github/actions/setup
+        with:
+          factory: "true"
+      - name: Log in to GHCR
+        env:
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ github.token }}
+        run: printf '%s' "$TOKEN" | .bin/crane auth login ghcr.io -u "$ACTOR" --password-stdin
+      - name: Stage (build, smoke test, SBOM, CVE gate)
+        run: task images:stage REUSE_PUBLISHED=1
+      - name: Functional tests on the staged digests
+        run: task images:functest
+      - name: Promote the tested digests to GHCR (keyless signatures)
+        run: task images:promote
+      - name: Sign the release manifest
+        run: .bin/cosign sign-blob --yes --bundle .build/promote/release.json.sigstore.json .build/promote/release.json
+      - name: List newly built images
+        id: manifest
+        run: |
+          built="$(jq -c '[.images[] | select(.reused | not)
+            | {name: (.references[0] | split("@")[0] | sub(":[^:/]+$"; "")), digest: .digest}]' \
+            .build/promote/release.json)"
+          echo "built=$built" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Images"
+            echo
+            echo "| Image | Tag | Digest | Status | Functional tests |"
+            echo "|---|---|---|---|---|"
+            jq -r '.images[] | "| \(.name) | \(.tag) | `\(.digest)` | \(if .reused then "reused" else "built and promoted" end) | \(if .reused then "(tested when published)" else "\(.functional.passed | length) passed" end) |"' \
+              .build/promote/release.json
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Create the GitHub release
+        if: steps.manifest.outputs.built != '[]'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="r$(date -u +%Y.%m.%d)-${GITHUB_RUN_NUMBER}"
+          mkdir -p .build/release
+          cp .build/promote/release.json .build/promote/release.json.sigstore.json .build/stage/functional.json .build/release/
+          for f in .build/stage/*/sbom-*.spdx.json; do
+            image="$(basename "$(dirname "$f")")"
+            cp "$f" ".build/release/${image}-$(basename "$f" | sed 's/^sbom-//')"
+          done
+          {
+            echo "Images published from ${GITHUB_SHA}, each one CVE-gated and functionally tested before promotion."
+            echo "Verify the manifest with:"
+            echo
+            echo '```sh'
+            echo "cosign verify-blob --bundle release.json.sigstore.json \\"
+            echo "  --certificate-identity https://github.com/${GITHUB_REPOSITORY}/.github/workflows/publish.yml@refs/heads/main \\"
+            echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com release.json"
+            echo '```'
+            echo
+            echo "| Image | Tag | Digest | Functional tests |"
+            echo "|---|---|---|---|"
+            jq -r '.images[] | "| \(.name) | \(.tag) | `\(.digest)` | \(if .reused then "reused" else "\(.functional.passed | length) passed" end) |"' \
+              .build/promote/release.json
+          } > .build/release-notes.md
+          gh release create "$tag" .build/release/* --title "$tag" --notes-file .build/release-notes.md \
+            --target "$GITHUB_SHA"
+      - name: Keep factory results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: factory-results
+          path: |
+            .build/stage/release.json
+            .build/stage/functional.json
+            .build/stage/*/gate.json
+            .build/stage/*/sbom-*.spdx.json
+            .build/promote/release.json
+            .build/promote/release.json.sigstore.json
+          if-no-files-found: warn
+
+  # SLSA build provenance for each image this run built, signed with this
+  # workflow's identity and pushed next to the image.
+  provenance:
+    needs: publish
+    if: needs.publish.outputs.built != '[]' && needs.publish.outputs.built != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: publish
+    permissions:
+      packages: write
+      id-token: write
+      attestations: write
+    strategy:
+      matrix:
+        image: ${{ fromJSON(needs.publish.outputs.built) }}
+    steps:
+      - name: Log in to GHCR
+        env:
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ github.token }}
+        run: printf '%s' "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ matrix.image.name }}
+          subject-digest: ${{ matrix.image.digest }}
+          push-to-registry: true
