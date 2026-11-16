@@ -34,4 +34,6 @@ first.
 - `task images:test` = `images:stage` (build, gate, stage) + `images:functest` + `images:verify`
 - `task images:promote TARGET=… KEY=…` (without `KEY`: keyless, CI only); refuses untested images
 - `task status` measures the published images and writes the status site (`.build/site`)
+- `task update` applies newer Wolfi packages and upstream releases past the 14-day cooldown (the daily
+  `update.yml` opens a pull request and dispatches CI on it); smoke expectations use `{version}`
 - `task ash` (`ASH_MODE=local` for a quick pass)
