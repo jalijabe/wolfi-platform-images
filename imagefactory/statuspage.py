@@ -180,6 +180,102 @@ def pill(ok: bool, good: str, bad: str) -> str:
     return f'<span class="pill {cls}">{mark} {esc(good if ok else bad)}</span>'
 
 
+def pill_button(ok: bool, text: str, row: str, section: str, label: str) -> str:
+    """A status pill that opens the image's detail row at a section."""
+    cls, mark = ("ok", "&#10003;") if ok else ("bad", "&#10005;")
+    return (
+        f'<button type="button" class="pill {cls} opener" data-row="{esc(row)}" data-section="{esc(section)}" '
+        f'aria-controls="{esc(row)}" aria-expanded="false" title="{esc(label)}">{mark} {esc(text)}</button>'
+    )
+
+
+COPY_ICON = (
+    '<svg class="i-copy" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" '
+    'd="M5 1.75C5 .78 5.78 0 6.75 0h7.5C15.22 0 16 .78 16 1.75v7.5c0 .97-.78 1.75-1.75 1.75h-7.5C5.78 11 5 10.22 5 '
+    "9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .14.11.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25ZM2 "
+    "5.75C2 5.34 2.34 5 2.75 5h.5a.75.75 0 0 1 0 1.5h-.5a.25.25 0 0 0-.25.25v7.5c0 .14.11.25.25.25h7.5a.25.25 0 0 0 "
+    '.25-.25v-.5a.75.75 0 0 1 1.5 0v.5c0 .97-.78 1.75-1.75 1.75h-7.5C1.78 16 1 15.22 1 14.25v-7.5C1 5.78 1.78 5 2.75 5Z"/>'
+    '</svg><svg class="i-check" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" '
+    'd="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.75.75 0 0 1 1.06-1.06L6 10.94l6.72-6.72a'
+    '.75.75 0 0 1 1.06 0Z"/></svg>'
+)
+
+
+def codebox(text: str, what: str) -> str:
+    """A command in a box, with a copy button that appears on hover or focus."""
+    return (
+        f'<div class="codebox"><pre tabindex="0">{esc(text)}</pre>'
+        f'<button type="button" class="copy" aria-label="Copy {esc(what)}" title="Copy">{COPY_ICON}'
+        f'<span class="copied" aria-hidden="true">Copied</span></button></div>'
+    )
+
+
+def commands(img: dict[str, Any], status: dict[str, Any]) -> tuple[str, str]:
+    ref = f"{img['reference']}@{img['digest']}"
+    ident, issuer = status["signing"]["identity"], status["signing"]["issuer"]
+    verify = f"cosign verify \\\n  --certificate-identity {ident} \\\n  --certificate-oidc-issuer {issuer} \\\n  {ref}"
+    return f"docker pull {ref}", verify
+
+
+OUTCOME = {
+    "passed": ('<span class="mark ok" aria-hidden="true">&#10003;</span>', "Passed"),
+    "failed": ('<span class="mark bad" aria-hidden="true">&#10005;</span>', "Failed"),
+    "skipped": ('<span class="mark skip" aria-hidden="true">&#8211;</span>', "Skipped"),
+}
+
+
+def tests_panel(fn: dict[str, Any]) -> str:
+    suites = fn.get("suites") or []
+    if not suites:
+        return '<p class="muted">No functional-test results for this digest.</p>'
+    out = []
+    for suite in suites:
+        items = []
+        for t in suite["tests"]:
+            mark, word = OUTCOME.get(t["outcome"], OUTCOME["skipped"])
+            doc = f'<span class="sub">{esc(t["doc"])}</span>' if t["doc"] else ""
+            items.append(
+                f'<li>{mark}<span class="sr">{word}: </span><span>{esc(t["title"])}'
+                f'<code class="testid">{esc(t["name"])}</code>{doc}</span></li>'
+            )
+        out.append(
+            f'<div class="suite"><p class="suite-name"><code>{esc(suite["file"])}</code></p>'
+            f'<p class="sub">{esc(suite["summary"])}</p><ul class="tests">{"".join(items)}</ul></div>'
+        )
+    return "".join(out)
+
+
+def cves_panel(cv: dict[str, Any]) -> str:
+    found = cv.get("findings") or []
+    if not found:
+        return '<p class="muted">No findings in the latest scan.</p>'
+    rows = []
+    for f in found:
+        vid = f'<a href="{esc(f["url"])}" rel="noopener">{esc(f["id"])}</a>' if f["url"] else esc(f["id"])
+        if f["blocking"]:
+            state = '<span class="pill bad">&#10005; Blocking</span>'
+        elif f["accepted"]:
+            state = '<span class="pill note">Accepted</span>'
+        else:
+            state = '<span class="muted">Below the gate</span>'
+        fix = f["fixState"] + (f" ({', '.join(f['fixedIn'])})" if f["fixedIn"] else "")
+        reason = (
+            f'<tr class="reason"><td colspan="6"><strong>Why it is accepted:</strong> {esc(f["accepted"])}</td></tr>'
+            if f["accepted"]
+            else ""
+        )
+        rows.append(
+            f'<tr><td data-label="Severity">{esc(f["severity"].capitalize())}</td><td data-label="ID">{vid}</td>'
+            f'<td data-label="Package"><code>{esc(f["package"])}</code></td>'
+            f'<td data-label="Version" class="num">{esc(f["version"])}</td><td data-label="Fix">{esc(fix)}</td>'
+            f'<td data-label="Status">{state}</td></tr>{reason}'
+        )
+    return (
+        '<div class="scroll"><table class="findings"><thead><tr><th>Severity</th><th>ID</th><th>Package</th>'
+        f"<th>Version</th><th>Fix</th><th>Status</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div>"
+    )
+
+
 def render(status: dict[str, Any]) -> str:
     s = summary(status)
     fresh_days = status["policy"]["freshDays"]
@@ -221,18 +317,37 @@ def render(status: dict[str, Any]) -> str:
             if up["current"]
             else pill(False, "", f"{up['latest']} available" if up["latest"] else (up["note"] or "unknown"))
         )
+        row_id = f"d-{i['name']}"
+        pull, verify = commands(i, status)
+        blocking = len(cv["blocking"])
         rows.append(
-            f"""<tr>
-  <th scope="row"><span class="name">{esc(i["name"])}</span><span class="sub">{esc(i["tag"])} ·
+            f"""<tr class="main">
+  <th scope="row"><button type="button" class="expand opener" data-row="{esc(row_id)}" data-section="pull"
+    aria-controls="{esc(row_id)}" aria-expanded="false" aria-label="Details for {esc(i["name"])}"><span aria-hidden="true">&#9656;</span></button><span
+    class="name">{esc(i["name"])}</span><span class="sub">{esc(i["tag"])} ·
     <code title="{esc(i["digest"])}">{esc(i["digest"][7:19])}</code></span></th>
   <td data-label="Built">{esc(age_text(i["ageDays"]))}<span class="sub nowrap">{esc((i["builtAt"] or "")[:10])}</span></td>
   <td data-label="Upstream">{upstream}<span class="sub">{esc(up["source"])}{(" · " + esc(up["latest"])) if up["latest"] else ""}</span></td>
-  <td data-label="CVEs">{pill(not cv["blocking"], "0 at or above high", f"{len(cv['blocking'])} at or above high")}
+  <td data-label="CVEs">{pill_button(not blocking, "0 at or above high" if not blocking else f"{blocking} at or above high", row_id, "cves", "Show the findings")}
     <span class="sub num">C {c["critical"]} · H {c["high"]} · M {c["medium"]} · L {c["low"]}
     {f" · {len(cv['accepted'])} accepted" if cv["accepted"] else ""}</span></td>
   <td data-label="Signature">{pill(i["signature"] == "verified", "verified", "not verified")}</td>
-  <td data-label="Functional tests">{pill(fn["ok"], f"{fn['passed']}/{total} passing", f"{fn['passed']}/{total} passing")}</td>
-</tr>"""
+  <td data-label="Functional tests">{pill_button(fn["ok"], f"{fn['passed']}/{total} passing", row_id, "tests", "Show what was tested")}</td>
+</tr>
+<tr class="detail" id="{esc(row_id)}"><td colspan="6"><div class="panel">
+  <section class="part" data-part="pull" tabindex="-1" aria-label="Pull {esc(i["name"])}">
+    <h4>Pull</h4>{codebox(pull, f"the pull command for {i['name']}")}
+    <h4>Verify</h4>{codebox(verify, f"the verify command for {i['name']}")}
+  </section>
+  <section class="part" data-part="cves" tabindex="-1" aria-label="CVE findings for {esc(i["name"])}">
+    <h4>CVE findings <span class="muted">· latest scan, gate at {esc(status["policy"]["maxCveSeverity"])}</span></h4>
+    {cves_panel(cv)}
+  </section>
+  <section class="part" data-part="tests" tabindex="-1" aria-label="Functional tests for {esc(i["name"])}">
+    <h4>Functional tests <span class="muted">· run against this digest</span></h4>
+    {tests_panel(fn)}
+  </section>
+</div></td></tr>"""
         )
     hist_rows = "".join(
         f"<tr><td>{esc(h['date'])}</td><td class='num'>{sum(v['blocking'] for v in h['images'].values())}</td>"
@@ -252,6 +367,7 @@ def render(status: dict[str, Any]) -> str:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Image Status</title>
+<script>document.documentElement.classList.add("js");</script>
 <meta name="description" content="Freshness, CVEs and functional test results for each published image, measured daily.">
 <style>
 :root {{
@@ -294,6 +410,52 @@ h3 {{ font-size: 15px; margin: 0 0 8px; }}
   border: 1px solid currentColor; white-space: nowrap; }}
 .pill.ok {{ color: var(--good-text); }}
 .pill.bad {{ color: var(--critical); }}
+.pill.note {{ color: var(--ink-2); }}
+button.pill {{ font-family: inherit; background: none; cursor: pointer; }}
+button.pill:hover {{ background: color-mix(in srgb, currentColor 10%, transparent); }}
+button:focus-visible, pre:focus-visible, .part:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; }}
+.expand {{ font: inherit; background: none; border: 0; color: var(--ink-2); cursor: pointer; width: 24px; height: 24px;
+  margin: -2px 4px 0 -6px; padding: 0; border-radius: 6px; vertical-align: middle; }}
+.expand:hover {{ background: var(--grid); }}
+.expand span {{ display: inline-block; transition: transform .15s; }}
+.expand[aria-expanded="true"] span {{ transform: rotate(90deg); }}
+.js tr.detail {{ display: none; }}
+.js tr.detail.open {{ display: table-row; }}
+tr.detail > td {{ border-top: 0; padding-top: 0; }}
+.panel {{ display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; padding: 14px; background: var(--page); border: 1px solid var(--ring); border-radius: 10px; }}
+.part {{ min-width: 0; }}
+.part h4 {{ font-size: 14px; margin: 0 0 8px; }}
+.part h4 + .codebox + h4 {{ margin-top: 12px; }}
+.part.flash {{ animation: flash 1.2s ease-out; }}
+@keyframes flash {{ from {{ box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 45%, transparent); }} to {{ box-shadow: 0 0 0 3px transparent; }} }}
+.codebox {{ position: relative; }}
+.codebox pre {{ margin: 0; padding-right: 48px; white-space: pre-wrap; overflow-wrap: anywhere; }}
+.copy {{ position: absolute; top: 8px; right: 8px; display: flex; align-items: center; gap: 6px; height: 30px; min-width: 30px;
+  justify-content: center; padding: 0 7px; border-radius: 6px; border: 1px solid var(--ring); background: var(--surface);
+  color: var(--ink-2); cursor: pointer; opacity: 0; transition: opacity .12s; }}
+.codebox:hover .copy, .codebox:focus-within .copy, .copy.done {{ opacity: 1; }}
+@media (hover: none) {{ .copy {{ opacity: 1; }} }}
+.copy:hover {{ color: var(--ink); background: var(--grid); }}
+.copy .i-check, .copy .copied {{ display: none; }}
+.copy.done {{ color: var(--good-text); }}
+.copy.done .i-copy {{ display: none; }}
+.copy.done .i-check, .copy.done .copied {{ display: inline; }}
+.copied {{ font-size: 12px; font-weight: 600; }}
+.suite + .suite {{ margin-top: 14px; }}
+.suite-name {{ margin: 0; }}
+.tests {{ list-style: none; margin: 6px 0 0; padding: 0; }}
+.tests li {{ display: flex; gap: 8px; padding: 6px 0; border-top: 1px solid var(--grid); }}
+.tests li:first-child {{ border-top: 0; }}
+.mark {{ width: 16px; flex: none; font-weight: 700; text-align: center; }}
+.mark.ok {{ color: var(--good-text); }}
+.mark.bad {{ color: var(--critical); }}
+.mark.skip {{ color: var(--muted); }}
+.testid {{ margin-left: 8px; color: var(--muted); }}
+.sr {{ position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }}
+.scroll {{ overflow-x: auto; }}
+table.findings {{ min-width: 640px; font-size: 13px; }}
+table.findings th, table.findings td {{ padding: 6px 10px; }}
+tr.reason td {{ border-top: 0; color: var(--ink-2); padding-top: 0; }}
 .table-wrap {{ overflow-x: auto; background: var(--surface); border: 1px solid var(--ring); border-radius: 10px; }}
 table {{ border-collapse: collapse; width: 100%; min-width: 760px; }}
 th, td {{ text-align: left; vertical-align: top; padding: 12px 14px; border-top: 1px solid var(--grid); }}
@@ -303,11 +465,22 @@ thead th {{ border-top: 0; font-size: 13px; color: var(--ink-2); font-weight: 60
 .nowrap {{ white-space: nowrap; }}
 @media (max-width: 720px) {{
   .table-wrap {{ overflow: visible; background: none; border: 0; }}
-  .images, .images tbody, .images tr, .images th, .images td {{ display: block; min-width: 0; }}
-  .images thead {{ display: none; }}
-  .images tr {{ background: var(--surface); border: 1px solid var(--ring); border-radius: 10px; margin-bottom: 12px; padding: 6px 0; }}
-  .images th, .images td {{ border-top: 0; padding: 6px 14px; }}
-  .images td::before {{ content: attr(data-label); display: block; font-size: 12px; color: var(--muted); }}
+  .images, .images > tbody, .images > tbody > tr, .images > tbody > tr > th, .images > tbody > tr > td {{ display: block; min-width: 0; }}
+  .images > thead {{ display: none; }}
+  .images > tbody > tr {{ background: var(--surface); border: 1px solid var(--ring); border-radius: 10px; margin-bottom: 12px; padding: 6px 0; }}
+  .images > tbody > tr > th, .images > tbody > tr > td {{ border-top: 0; padding: 6px 14px; }}
+  .images > tbody > tr > td::before {{ content: attr(data-label); display: block; font-size: 12px; color: var(--muted); }}
+  .images > tbody > tr.detail {{ margin-top: -10px; padding: 0; border-top-left-radius: 0; border-top-right-radius: 0; }}
+  .js .images > tbody > tr.detail.open {{ display: block; }}
+  .images > tbody > tr.detail > td {{ padding: 0 8px 8px; }}
+  .images > tbody > tr.detail > td::before {{ content: none; }}
+  table.findings, table.findings tbody, table.findings tr, table.findings td {{ display: block; min-width: 0; }}
+  table.findings thead {{ display: none; }}
+  table.findings tr {{ border-top: 1px solid var(--grid); padding: 6px 0; }}
+  table.findings tr.reason {{ border-top: 0; padding-top: 0; }}
+  table.findings td {{ border: 0; padding: 2px 0; overflow-wrap: anywhere; }}
+  table.findings td[data-label]::before {{ content: attr(data-label) ": "; color: var(--muted); }}
+  .testid {{ display: block; margin-left: 0; overflow-wrap: anywhere; }}
 }}
 code {{ font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }}
 section {{ margin-bottom: 32px; }}
@@ -374,10 +547,7 @@ tested. This page is measured daily against the published images.</p>
 </section>
 <section aria-labelledby="verify-h">
 <h3 id="verify-h">Verify it yourself</h3>
-<pre>cosign verify \\
-  --certificate-identity {esc(ident)} \\
-  --certificate-oidc-issuer {esc(issuer)} \\
-  {esc(reg)}/{esc(example["name"])}:{esc(example["tag"])}</pre>
+{codebox(f"cosign verify \\\n  --certificate-identity {ident} \\\n  --certificate-oidc-issuer {issuer} \\\n  {reg}/{example['name']}:{example['tag']}", "the verify command")}
 </section>
 <footer>Measured {esc(status["generatedAt"])} by
 <a href="{esc(status["source"]["repository"])}/actions/runs/{esc(status["source"]["run"])}">this workflow run</a> ·
@@ -394,6 +564,47 @@ tested. This page is measured daily against the published images.</p>
     tip.style.left = Math.min(x + 12, window.innerWidth - w - 8) + "px";
     tip.style.top = (y + 12) + "px";
   }};
+  const controls = (row) => document.querySelectorAll(`.opener[data-row="${{row}}"]`);
+  const setOpen = (row, open) => {{
+    document.getElementById(row).classList.toggle("open", open);
+    controls(row).forEach((c) => c.setAttribute("aria-expanded", String(open)));
+  }};
+  const reveal = (row, part) => {{
+    const el = document.querySelector(`#${{CSS.escape(row)}} [data-part="${{part}}"]`);
+    if (!el) return;
+    el.scrollIntoView({{ block: "nearest", behavior: "smooth" }});
+    el.focus({{ preventScroll: true }});
+    el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash");
+  }};
+  document.querySelectorAll(".opener").forEach((btn) => {{
+    btn.addEventListener("click", () => {{
+      const row = btn.dataset.row, part = btn.dataset.section;
+      const isOpen = document.getElementById(row).classList.contains("open");
+      if (btn.classList.contains("expand")) {{ setOpen(row, !isOpen); return; }}
+      if (isOpen && btn.dataset.shown === "1") {{ setOpen(row, false); btn.dataset.shown = ""; return; }}
+      controls(row).forEach((c) => (c.dataset.shown = ""));
+      setOpen(row, true); btn.dataset.shown = "1"; reveal(row, part);
+    }});
+  }});
+  const copyText = async (text) => {{
+    try {{ await navigator.clipboard.writeText(text); return true; }} catch (e) {{
+      const ta = document.createElement("textarea");
+      ta.value = text; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      const ok = document.execCommand("copy"); ta.remove(); return ok;
+    }}
+  }};
+  document.querySelectorAll(".codebox .copy").forEach((btn) => {{
+    const label = btn.getAttribute("aria-label");
+    btn.addEventListener("click", async () => {{
+      if (!(await copyText(btn.parentElement.querySelector("pre").innerText))) return;
+      btn.classList.add("done"); btn.setAttribute("aria-label", "Copied"); btn.title = "Copied";
+      clearTimeout(btn._t);
+      btn._t = setTimeout(() => {{ btn.classList.remove("done"); btn.setAttribute("aria-label", label); btn.title = "Copy"; }}, 1600);
+    }});
+  }});
+  const hash = location.hash.slice(1);
+  if (hash && document.getElementById(hash) && document.getElementById(hash).classList.contains("detail")) setOpen(hash, true);
   document.querySelectorAll("[data-tip]").forEach((el) => {{
     el.addEventListener("pointermove", (e) => show(el, e.clientX, e.clientY));
     el.addEventListener("pointerleave", () => (tip.style.display = "none"));

@@ -19,6 +19,7 @@ statuspage renders.
 
 from __future__ import annotations
 
+import ast
 import datetime as dt
 import io
 import json
@@ -222,14 +223,106 @@ def scan(
         sev = str(m["vulnerability"].get("severity", "Unknown")).lower()
         counts[sev if sev in counts else "unknown"] += 1
     g = gate(data, name, threshold, exceptions, dt.date.today())
+    reasons = {(f.id, f.package): r for f, r in g.accepted}
+    blocking = {(f.id, f.package) for f in g.blocking}
+    order = {s: i for i, s in enumerate(reversed((*SEVERITIES, "unknown")))}
+    found = []
+    for m in data.get("matches", []):
+        v, a = m["vulnerability"], m["artifact"]
+        key = (v["id"], a["name"])
+        found.append(
+            {
+                "id": v["id"],
+                "severity": str(v.get("severity", "Unknown")).lower(),
+                "package": a["name"],
+                "version": a["version"],
+                "type": a.get("type", ""),
+                "fixState": str(v.get("fix", {}).get("state", "unknown")),
+                "fixedIn": list(v.get("fix", {}).get("versions", []) or []),
+                "url": advisory_url(v["id"], str(v.get("dataSource", ""))),
+                "blocking": key in blocking,
+                "accepted": reasons.get(key),
+            }
+        )
+    found.sort(key=lambda f: (order.get(f["severity"], 99), f["id"], f["package"]))
     return {
         "counts": counts,
         "total": g.total,
         "blocking": [f.id for f in g.blocking],
         "accepted": [{"id": f.id, "reason": r} for f, r in g.accepted],
+        "findings": found,
         "dbBuilt": data.get("descriptor", {}).get("db", {}).get("status", {}).get("built")
         or data.get("descriptor", {}).get("db", {}).get("built"),
     }
+
+
+def advisory_url(vid: str, data_source: str) -> str:
+    """A human-readable advisory page for a vulnerability ID."""
+    if vid.startswith("GHSA-"):
+        return f"https://github.com/advisories/{vid}"
+    if vid.startswith("GO-"):
+        return f"https://pkg.go.dev/vuln/{vid}"
+    if vid.startswith("CVE-"):
+        return f"https://nvd.nist.gov/vuln/detail/{vid}"
+    return data_source if data_source.startswith("https://") else ""
+
+
+# ---------------------------------------------------------------- what the tests check
+
+
+def describe_tests(root: Path, results: dict[str, list[str]]) -> list[dict[str, Any]]:
+    """Functional-test results grouped by suite (test file), with each suite's
+    and test's description taken from the docstrings in the test files."""
+    outcome = {t: k for k in ("passed", "failed", "skipped") for t in results.get(k, [])}
+    suites: dict[str, dict[str, Any]] = {}
+    for nodeid in sorted(outcome):
+        path, _, func = nodeid.partition("::")
+        if path not in suites:
+            summary, docs = _docstrings(root / path)
+            suites[path] = {"file": path, "summary": summary, "tests": [], "_docs": docs}
+        base = func.split("[", 1)[0]
+        suites[path]["tests"].append(
+            {
+                "name": func,
+                "title": _title(base),
+                "doc": suites[path]["_docs"].get(base, ""),
+                "outcome": outcome[nodeid],
+            }
+        )
+    for suite in suites.values():
+        del suite["_docs"]
+    return list(suites.values())
+
+
+ACRONYMS = {
+    "id": "ID", "ids": "IDs", "spiffe": "SPIFFE", "svid": "SVID", "svids": "SVIDs", "csi": "CSI",
+    "cve": "CVE", "cves": "CVEs", "ca": "CA", "haproxy": "HAProxy", "spire": "SPIRE", "http": "HTTP",
+    "tls": "TLS", "api": "API",
+}  # fmt: skip
+
+
+def _title(func: str) -> str:
+    """test_csi_driver_registers_with_the_kubelet -> CSI driver registers with the kubelet."""
+    words = [ACRONYMS.get(w, w) for w in func.removeprefix("test_").split("_")]
+    if words and words[0] == words[0].lower():
+        words[0] = words[0].capitalize()
+    return " ".join(words)
+
+
+def _docstrings(path: Path) -> tuple[str, dict[str, str]]:
+    """A test file's module docstring and its test functions' docstrings."""
+    try:
+        tree = ast.parse(path.read_text())
+    except (OSError, SyntaxError):
+        return "", {}
+    # The first paragraph describes what the suite proves; the rest is how to run it.
+    module = " ".join((ast.get_docstring(tree) or "").split("\n\n")[0].split())
+    funcs = {
+        n.name: " ".join((ast.get_docstring(n) or "").split())
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name.startswith("test_")
+    }
+    return module, funcs
 
 
 # ---------------------------------------------------------------- assemble
@@ -289,7 +382,7 @@ def measure(
                     "skipped": skipped,
                     "ok": passed > 0 and failed == 0 and skipped == 0,
                     "failures": f.get("failed", []),
-                    "tests": sorted({t.split("::")[-1] for t in f.get("passed", [])}),
+                    "suites": describe_tests(root, f),
                 },
             }
         )

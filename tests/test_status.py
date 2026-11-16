@@ -225,3 +225,95 @@ def test_page_escapes_untrusted_text() -> None:
 def test_badge_text_colour_follows_the_fill() -> None:
     assert 'fill="#0b0b0b" font-weight' in badge("built", "40 days ago", "#fab219")
     assert 'fill="#ffffff" font-weight' in badge("tests", "7/7 passing", "#0ca30c")
+
+
+# ---------------------------------------------------------------- drill-down
+
+
+def test_findings_carry_detail_and_the_reason_an_accepted_one_is_accepted(tmp_path: Path) -> None:
+    from imagefactory.status import scan
+
+    matches = [
+        {**match("GHSA-mgcc-cww5-fp2q", "High", "github.com/go-jose/go-jose/v3"),
+         "vulnerability": {"id": "GHSA-mgcc-cww5-fp2q", "severity": "High", "fix": {"state": "not-fixed"}}},
+        match("CVE-2", "Low", "zlib"),
+        match("CVE-9", "Critical", "openssl"),
+    ]  # fmt: skip
+    exc = [{"image": "spire-server", "id": "GHSA-mgcc-cww5-fp2q", "package": "github.com/go-jose/go-jose/v3",
+            "reason": "Not reachable: <bundleformat>", "owner": "x", "expires": "2099-01-01"}]  # fmt: skip
+    out = scan("r@d", "spire-server", "high", exc, FakeRunner(matches), Tools(tmp_path))
+    by_id = {f["id"]: f for f in out["findings"]}
+    assert [f["id"] for f in out["findings"]] == [
+        "CVE-9",
+        "GHSA-mgcc-cww5-fp2q",
+        "CVE-2",
+    ]  # most severe first
+    assert by_id["GHSA-mgcc-cww5-fp2q"]["accepted"] == "Not reachable: <bundleformat>"
+    assert not by_id["GHSA-mgcc-cww5-fp2q"]["blocking"]
+    assert by_id["GHSA-mgcc-cww5-fp2q"]["url"] == "https://github.com/advisories/GHSA-mgcc-cww5-fp2q"
+    assert by_id["CVE-9"]["blocking"]
+    assert by_id["CVE-9"]["url"] == "https://nvd.nist.gov/vuln/detail/CVE-9"
+    assert by_id["CVE-2"]["accepted"] is None
+
+
+def test_functional_results_are_described_from_the_test_files() -> None:
+    from imagefactory.status import describe_tests
+
+    results = {
+        "passed": ["tests/functional/test_haproxy.py::test_proxies_requests_to_a_healthy_backend"],
+        "failed": ["tests/functional/test_spire.py::test_agent_attests_with_a_join_token"],
+        "skipped": [],
+    }
+    suites = {s["file"]: s for s in describe_tests(REPO, results)}
+    hap = suites["tests/functional/test_haproxy.py"]
+    assert hap["summary"].startswith("HAProxy works")
+    (t,) = hap["tests"]
+    assert t == {**t, "title": "Proxies requests to a healthy backend", "outcome": "passed"}
+    assert suites["tests/functional/test_spire.py"]["tests"][0]["outcome"] == "failed"
+    assert (
+        "task tools:functest" not in suites["tests/functional/test_spire.py"]["summary"]
+    )  # first paragraph only
+
+
+def test_test_titles_keep_acronyms() -> None:
+    from imagefactory.status import _title
+
+    assert _title("test_server_mints_svids_from_its_ca") == "Server mints SVIDs from its CA"
+    assert _title("test_csi_driver_registers_with_the_kubelet") == "CSI driver registers with the kubelet"
+
+
+def detailed_status() -> dict[str, Any]:
+    st = measured([match("CVE-1", "Medium", "openssl")])
+    img = st["images"][0]
+    img["cves"]["findings"] = [
+        {"id": "GHSA-x", "severity": "high", "package": "p", "version": "1", "type": "go-module",
+         "fixState": "not-fixed", "fixedIn": [], "url": "https://github.com/advisories/GHSA-x",
+         "blocking": False, "accepted": "Not reachable <here>"},
+    ]  # fmt: skip
+    img["functional"]["suites"] = [
+        {"file": "tests/functional/test_haproxy.py", "summary": "HAProxy works.",
+         "tests": [{"name": "test_a", "title": "A", "doc": "", "outcome": "passed"},
+                   {"name": "test_b", "title": "B", "doc": "", "outcome": "failed"}]},
+    ]  # fmt: skip
+    return st
+
+
+def test_pills_open_the_row_with_what_was_tested_and_the_findings() -> None:
+    page = render(detailed_status())
+    assert 'class="pill ok opener" data-row="d-haproxy" data-section="cves"' in page
+    assert 'data-row="d-haproxy" data-section="tests"' in page
+    assert '<tr class="detail" id="d-haproxy">' in page
+    assert 'data-part="tests"' in page
+    assert 'data-part="cves"' in page
+    assert "Why it is accepted:</strong> Not reachable &lt;here&gt;" in page
+    assert '<a href="https://github.com/advisories/GHSA-x"' in page
+    assert "Failed: </span>" in page  # outcome in words, not colour alone
+
+
+def test_pull_and_verify_commands_are_copyable() -> None:
+    page = render(detailed_status())
+    ref = "ghcr.io/o/r/haproxy:3.4.7-r1@sha256:abc"
+    assert f"docker pull {ref}</pre>" in page
+    assert f"  {ref}</pre>" in page  # the image's own verify command
+    assert page.count('class="copy"') == 3  # pull, verify, and the page's "verify it yourself" box
+    assert "navigator.clipboard.writeText" in page
