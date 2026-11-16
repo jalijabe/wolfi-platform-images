@@ -4,18 +4,23 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from imagefactory.sariffilter import filter_sarif, main
 
 
-def sarif(*results: dict[str, object]) -> dict[str, object]:
+def sarif(*results: dict[str, Any]) -> dict[str, Any]:
     return {"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "ASH"}}, "results": list(results)}]}
 
 
-SUPPRESSED = {"ruleId": "S", "level": "error", "suppressions": [{"kind": "inSource", "justification": "pin"}]}
-NOTE = {"ruleId": "B101", "level": "note"}
-ERROR = {"ruleId": "CKV_K8S_16", "level": "error"}
-WARNING = {"ruleId": "B310", "level": "warning"}
+SUPPRESSED: dict[str, Any] = {
+    "ruleId": "S",
+    "level": "error",
+    "suppressions": [{"kind": "inSource", "justification": "pin"}],
+}
+NOTE: dict[str, Any] = {"ruleId": "B101", "level": "note"}
+ERROR: dict[str, Any] = {"ruleId": "CKV_K8S_16", "level": "error"}
+WARNING: dict[str, Any] = {"ruleId": "B310", "level": "warning"}
 
 
 def test_keeps_unsuppressed_errors_and_warnings_only() -> None:
