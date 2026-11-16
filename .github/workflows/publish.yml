@@ -1,9 +1,13 @@
-# Publish: build, gate, sign keylessly and push to GHCR, then record a signed
-# release manifest and build provenance. Runs only from main, in the `publish`
-# environment (deployments limited to main). Images whose tag is already
-# published and signed by this workflow are reused, not rebuilt.
+# Publish: stage → functional test → promote. Every image is built, smoke-
+# tested, SBOM'd and CVE-gated into a local staging registry; the functional
+# tests run against those exact digests; only then are the tested digests
+# copied to GHCR, signed keylessly there and recorded in a signed release
+# manifest with build provenance. Nothing untested is published, and what is
+# published is byte-for-byte what was tested.
 #
-# Consumers verify with the identity and issuer in images.yaml, e.g.:
+# Runs only from main, in the `publish` environment (deployments limited to
+# main). Images whose tag is already published and signed by this workflow are
+# reused, not rebuilt. Consumers verify with the identity in images.yaml:
 #   cosign verify \
 #     --certificate-identity https://github.com/jalijabe/wolfi-platform-images/.github/workflows/publish.yml@refs/heads/main \
 #     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
@@ -19,6 +23,7 @@ on:
       - images.yaml
       - cve-exceptions.yaml
       - imagefactory/**
+      - tests/functional/**
       - Taskfile.yml
       - pyproject.toml
       - uv.lock
@@ -36,7 +41,7 @@ jobs:
   publish:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 150
     environment: publish
     permissions:
       contents: write # the GitHub release carrying the manifest
@@ -60,24 +65,28 @@ jobs:
           ACTOR: ${{ github.actor }}
           TOKEN: ${{ github.token }}
         run: printf '%s' "$TOKEN" | .bin/crane auth login ghcr.io -u "$ACTOR" --password-stdin
-      - name: Build, gate, sign and publish
-        run: task images:build SKIP_EXISTING=1
+      - name: Stage (build, smoke test, SBOM, CVE gate)
+        run: task images:stage REUSE_PUBLISHED=1
+      - name: Functional tests on the staged digests
+        run: task images:functest
+      - name: Promote the tested digests to GHCR (keyless signatures)
+        run: task images:promote
       - name: Sign the release manifest
-        run: .bin/cosign sign-blob --yes --bundle .build/factory/release.json.sigstore.json .build/factory/release.json
+        run: .bin/cosign sign-blob --yes --bundle .build/promote/release.json.sigstore.json .build/promote/release.json
       - name: List newly built images
         id: manifest
         run: |
           built="$(jq -c '[.images[] | select(.reused | not)
             | {name: (.references[0] | split("@")[0] | sub(":[^:/]+$"; "")), digest: .digest}]' \
-            .build/factory/release.json)"
+            .build/promote/release.json)"
           echo "built=$built" >> "$GITHUB_OUTPUT"
           {
             echo "## Images"
             echo
-            echo "| Image | Tag | Digest | Status |"
-            echo "|---|---|---|---|"
-            jq -r '.images[] | "| \(.name) | \(.tag) | `\(.digest)` | \(if .reused then "reused" else "built" end) |"' \
-              .build/factory/release.json
+            echo "| Image | Tag | Digest | Status | Functional tests |"
+            echo "|---|---|---|---|---|"
+            jq -r '.images[] | "| \(.name) | \(.tag) | `\(.digest)` | \(if .reused then "reused" else "built and promoted" end) | \(if .reused then "(tested when published)" else "\(.functional.passed | length) passed" end) |"' \
+              .build/promote/release.json
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Create the GitHub release
         if: steps.manifest.outputs.built != '[]'
@@ -86,13 +95,14 @@ jobs:
         run: |
           tag="r$(date -u +%Y.%m.%d)-${GITHUB_RUN_NUMBER}"
           mkdir -p .build/release
-          cp .build/factory/release.json .build/factory/release.json.sigstore.json .build/release/
-          for f in .build/factory/*/sbom-*.spdx.json; do
+          cp .build/promote/release.json .build/promote/release.json.sigstore.json .build/stage/functional.json .build/release/
+          for f in .build/stage/*/sbom-*.spdx.json; do
             image="$(basename "$(dirname "$f")")"
             cp "$f" ".build/release/${image}-$(basename "$f" | sed 's/^sbom-//')"
           done
           {
-            echo "Images published from ${GITHUB_SHA}. Verify the manifest with:"
+            echo "Images published from ${GITHUB_SHA}, each one CVE-gated and functionally tested before promotion."
+            echo "Verify the manifest with:"
             echo
             echo '```sh'
             echo "cosign verify-blob --bundle release.json.sigstore.json \\"
@@ -100,9 +110,10 @@ jobs:
             echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com release.json"
             echo '```'
             echo
-            echo "| Image | Tag | Digest |"
-            echo "|---|---|---|"
-            jq -r '.images[] | "| \(.name) | \(.tag) | `\(.digest)` |"' .build/factory/release.json
+            echo "| Image | Tag | Digest | Functional tests |"
+            echo "|---|---|---|---|"
+            jq -r '.images[] | "| \(.name) | \(.tag) | `\(.digest)` | \(if .reused then "reused" else "\(.functional.passed | length) passed" end) |"' \
+              .build/promote/release.json
           } > .build/release-notes.md
           gh release create "$tag" .build/release/* --title "$tag" --notes-file .build/release-notes.md \
             --target "$GITHUB_SHA"
@@ -112,10 +123,12 @@ jobs:
         with:
           name: factory-results
           path: |
-            .build/factory/release.json
-            .build/factory/release.json.sigstore.json
-            .build/factory/*/gate.json
-            .build/factory/*/sbom-*.spdx.json
+            .build/stage/release.json
+            .build/stage/functional.json
+            .build/stage/*/gate.json
+            .build/stage/*/sbom-*.spdx.json
+            .build/promote/release.json
+            .build/promote/release.json.sigstore.json
           if-no-files-found: warn
 
   # SLSA build provenance for each image this run built, signed with this

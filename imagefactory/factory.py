@@ -12,7 +12,10 @@ For each image the factory:
 5. copies the image to every target registry (same digest), signs it and
    attests the SBOM there with cosign, and verifies both.
 
-Nothing reaches a target before the gate passes. Signing is keyless (GitHub
+Nothing reaches a target before the gate passes. ``build`` publishes to a
+staging registry; the functional tests (``tests/functional``) run against
+those exact digests; ``promote`` then copies only images whose functional
+tests all passed to the real target and signs them there. Signing is keyless (GitHub
 OIDC, Fulcio and Rekor; the identity in images.yaml) or with a key file or KMS
 key and no transparency log. Every run writes ``release.json``: each image's
 tag, digests per platform, references, gate summary and the source commit.
@@ -617,6 +620,8 @@ class Result:
     gate: dict[str, Any] | None
     smoke: str
     reused: bool = False
+    # Per platform: the SBOM file, relative to the build's output directory.
+    sboms: dict[str, str] = field(default_factory=dict)
 
 
 class Factory:
@@ -628,7 +633,8 @@ class Factory:
         exceptions: list[dict[str, Any]],
         targets: list[str],
         today: dt.date | None = None,
-        skip_existing: bool = False,
+        reuse_from: str | None = None,
+        reuse_signer: Signer | None = None,
     ) -> None:
         self.b = builder
         self.threshold = threshold
@@ -636,7 +642,8 @@ class Factory:
         self.exceptions = exceptions
         self.targets = targets
         self.today = today or dt.date.today()
-        self.skip_existing = skip_existing
+        self.reuse_from = reuse_from
+        self.reuse_signer = reuse_signer or signer
 
     def _platform_digests(self, job: Job, ref: str) -> dict[str, str]:
         out = {}
@@ -648,48 +655,36 @@ class Factory:
         return out
 
     def existing(self, job: Job) -> Result | None:
-        """The published image, if every target already has this tag with the
-        same digest and a valid signature from this signer; else None."""
-        run, tools = self.b.run, self.b.tools
-        digests = set()
-        for target in self.targets:
-            r = run(
-                [tools("crane"), "digest", f"{target}/{job.ref}"],
-                capture_output=True,
-                check=False,
-            )
-            if r.returncode != 0:
-                return None
-            digest = r.stdout.strip()
-            v = run(
-                self.signer.verify(tools("cosign"), f"{target}/{job.name}@{digest}"),
-                capture_output=True,
-                check=False,
-            )
-            if v.returncode != 0:
-                return None
-            digests.add(digest)
-        if len(digests) != 1:
+        """The image already published at ``reuse_from`` under this tag and
+        signed by the reuse signer; None if it is missing or does not verify.
+        A reused image is not rebuilt: it was tested when it was published."""
+        if self.reuse_from is None:
             return None
-        digest = digests.pop()
-        first = f"{self.targets[0]}/{job.name}@{digest}"
+        run, tools, registry = self.b.run, self.b.tools, self.reuse_from
+        r = run([tools("crane"), "digest", f"{registry}/{job.ref}"], capture_output=True, check=False)
+        if r.returncode != 0:
+            return None
+        digest = r.stdout.strip()
+        ref = f"{registry}/{job.name}@{digest}"
+        v = run(self.reuse_signer.verify(tools("cosign"), ref), capture_output=True, check=False)
+        if v.returncode != 0:
+            return None
         return Result(
             job.name,
             job.tag,
             digest,
-            self._platform_digests(job, first),
-            [f"{t}/{job.ref}@{digest}" for t in self.targets],
+            self._platform_digests(job, ref),
+            [f"{registry}/{job.ref}@{digest}"],
             None,
             "skipped: already published",
             reused=True,
         )
 
     def publish(self, job: Job) -> Result:
-        if self.skip_existing:
-            found = self.existing(job)
-            if found is not None:
-                print(f"{job.name}: {job.ref} is already published and signed; skipping", file=sys.stderr)
-                return found
+        found = self.existing(job)
+        if found is not None:
+            print(f"{job.name}: {job.ref} is already published and signed; reusing it", file=sys.stderr)
+            return found
         run, tools, work = self.b.run, self.b.tools, self.b.out / job.name
         staged = self.b.build(job)
         digest = staged.rsplit("@", 1)[1]
@@ -771,7 +766,8 @@ class Factory:
                 run(s.attest(cosign, sboms[plat], f"{dest}@{d}"))
                 run(s.verify_attestation(cosign, f"{dest}@{d}"), capture_output=True)
             references.append(f"{dest}:{job.tag}@{digest}")
-        return Result(job.name, job.tag, digest, platforms, references, summary, smoke_out)
+        rel = {plat: str(path.relative_to(self.b.out)) for plat, path in sboms.items()}
+        return Result(job.name, job.tag, digest, platforms, references, summary, smoke_out, sboms=rel)
 
     def _smoke(self, job: Job, staged: str, cfg: dict[str, Any]) -> str:
         if job.smoke is None:
@@ -827,13 +823,90 @@ def release_manifest(
         "apiVersion": RELEASE_API,
         "createdAt": now.astimezone(dt.UTC).isoformat(timespec="seconds"),
         "source": source,
-        "signing": (
-            {"mode": "keyless", "identity": signer.identity, "issuer": signer.issuer}
-            if signer.keyless
-            else {"mode": "key"}
-        ),
+        "signing": _signing_info(signer),
         "images": [asdict(r) for r in results],
     }
+
+
+# ---------------------------------------------------------------- promote
+
+
+def functional_summary(report: dict[str, Any], name: str) -> dict[str, Any]:
+    """An image's functional-test results from the report the functional test
+    suite writes (``tests/functional``): test IDs by outcome."""
+    r = report.get("images", {}).get(name, {})
+    passed, failed, skipped = (list(r.get(k, [])) for k in ("passed", "failed", "skipped"))
+    return {
+        "passed": passed,
+        "failed": failed,
+        "skipped": skipped,
+        # Passing only when something ran and nothing failed or was skipped.
+        "ok": bool(passed) and not failed and not skipped,
+    }
+
+
+def promote(
+    release: dict[str, Any],
+    report: dict[str, Any],
+    build_out: Path,
+    targets: Sequence[str],
+    signer: Signer,
+    tools: Tools,
+    run: Runner = _run,
+) -> dict[str, Any]:
+    """Copy each newly built, functionally tested image by digest from staging to
+    every target, sign it and attest its SBOMs there, and verify. Refuses the
+    whole promotion, before copying anything, if any built image lacks passing
+    functional tests. Reused images (already published) are carried over."""
+    untested = []
+    for img in release["images"]:
+        if img["reused"]:
+            continue
+        f = functional_summary(report, img["name"])
+        if not f["ok"]:
+            untested.append(
+                f"  {img['name']}: {len(f['passed'])} passed, {len(f['failed'])} failed, "
+                f"{len(f['skipped'])} skipped"
+            )
+    if untested:
+        raise SystemExit(
+            "refusing to promote images without passing functional tests:\n" + "\n".join(untested)
+        )
+
+    cosign = tools("cosign")
+    images = []
+    for img in release["images"]:
+        if img["reused"]:
+            images.append(img)
+            continue
+        digest, tag, name = img["digest"], img["tag"], img["name"]
+        source = img["references"][0].split("@", 1)[0].rsplit(":", 1)[0]
+        references = []
+        for target in targets:
+            dest = f"{target}/{name}"
+            run([tools("crane"), "copy", f"{source}@{digest}", f"{dest}:{tag}"])
+            run(signer.sign(cosign, f"{dest}@{digest}"))
+            run(signer.verify(cosign, f"{dest}@{digest}"), capture_output=True)
+            for plat, d in img["platforms"].items():
+                if d != digest:
+                    run(signer.sign(cosign, f"{dest}@{d}"))
+                run(signer.attest(cosign, build_out / img["sboms"][plat], f"{dest}@{d}"))
+                run(signer.verify_attestation(cosign, f"{dest}@{d}"), capture_output=True)
+            references.append(f"{dest}:{tag}@{digest}")
+        images.append({**img, "references": references, "functional": functional_summary(report, name)})
+    return {
+        "apiVersion": RELEASE_API,
+        "createdAt": dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
+        "source": release["source"],
+        "signing": _signing_info(signer),
+        "images": images,
+    }
+
+
+def _signing_info(signer: Signer) -> dict[str, str]:
+    if signer.keyless:
+        return {"mode": "keyless", "identity": signer.identity, "issuer": signer.issuer}
+    return {"mode": "key"}
 
 
 # ---------------------------------------------------------------- CLI
@@ -845,9 +918,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     p_lint = sub.add_parser("lint", help="check the catalog and recipes offline")
     p_plan = sub.add_parser("plan", help="print the build plan")
     p_gate = sub.add_parser("gate", help="apply the CVE gate to a grype JSON report")
-    p_build = sub.add_parser("build", help="build, gate, sign and publish")
+    p_build = sub.add_parser(
+        "build", help="build, gate, sign and publish (to staging, before functional tests)"
+    )
+    p_promote = sub.add_parser(
+        "promote", help="copy functionally tested images from staging to the target, sign and verify"
+    )
     p_lockable = sub.add_parser("lockable", help="list the apko recipes that carry a lock file")
-    for p in (p_lint, p_plan, p_build, p_lockable):
+    for p in (p_lint, p_plan, p_build, p_lockable, p_promote):
         p.add_argument("--root", type=Path, default=Path.cwd())
         p.add_argument("--catalog", type=Path, default=Path("images.yaml"))
     for p in (p_plan, p_build):
@@ -856,19 +934,32 @@ def main(argv: Sequence[str] | None = None) -> int:
     p_gate.add_argument("--image", required=True)
     p_gate.add_argument("--threshold", required=True, choices=SEVERITIES)
     p_gate.add_argument("--exceptions", type=Path, default=Path("cve-exceptions.yaml"))
-    p_build.add_argument("--out", type=Path, default=Path(".build/factory"))
-    p_build.add_argument("--bin", type=Path, default=Path(".bin"))
+    for p in (p_build, p_promote):
+        p.add_argument("--out", type=Path, default=Path(".build/factory"))
+        p.add_argument("--bin", type=Path, default=Path(".bin"))
+        signing = p.add_mutually_exclusive_group(required=True)
+        signing.add_argument("--key", help="cosign key file or KMS URI (no transparency log)")
+        signing.add_argument(
+            "--keyless", action="store_true", help="sign with the ambient OIDC identity (Fulcio and Rekor)"
+        )
+        p.add_argument("--target", action="append", default=[], help="override the catalog's registry")
     p_build.add_argument("--arch", help="comma-separated, e.g. x86_64,aarch64 (default: the catalog's)")
-    signing = p_build.add_mutually_exclusive_group(required=True)
-    signing.add_argument("--key", help="cosign key file or KMS URI (no transparency log)")
-    signing.add_argument(
-        "--keyless", action="store_true", help="sign with the ambient OIDC identity (Fulcio and Rekor)"
-    )
-    p_build.add_argument("--target", action="append", default=[], help="override the catalog's registry")
     p_build.add_argument(
-        "--skip-existing",
-        action="store_true",
-        help="reuse an image whose tag every target already has, signed by this signer",
+        "--reuse-from",
+        help="registry to reuse images from: an image whose tag is there and verifies is not rebuilt",
+    )
+    p_build.add_argument(
+        "--reuse-published", action="store_true", help="--reuse-from the catalog's registry (images.yaml)"
+    )
+    p_build.add_argument(
+        "--reuse-key", help="verify reused images with this key (default: the catalog's keyless identity)"
+    )
+    p_promote.add_argument("--release", type=Path, required=True, help="release.json from the staging build")
+    p_promote.add_argument(
+        "--functional", type=Path, required=True, help="functional-test report (tests/functional)"
+    )
+    p_promote.add_argument(
+        "--build-out", type=Path, help="the staging build's output directory (default: next to --release)"
     )
     args = ap.parse_args(argv)
 
@@ -912,7 +1003,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"images lint: {len(catalog.images)} recipes OK")
         return 1 if problems else 0
 
-    jobs = plan(catalog, set(args.only) or None)
+    jobs = plan(catalog, set(args.only) or None) if args.cmd in ("plan", "build") else []
     if args.cmd == "plan":
         print(json.dumps([asdict(j) for j in jobs], indent=2))
         return 0
@@ -921,13 +1012,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     out.mkdir(parents=True, exist_ok=True)
     tools = Tools(args.bin.resolve())
     targets = [t.rstrip("/") for t in args.target] or [catalog.registry]
+    signer = _signer(catalog, args.key, out, tools)
+
+    if args.cmd == "promote":
+        release = json.loads(args.release.read_text())
+        report = json.loads(args.functional.read_text())
+        build_out = (args.build_out or args.release.parent).resolve()
+        manifest = promote(release, report, build_out, targets, signer, tools)
+        (out / "release.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        for img in manifest["images"]:
+            print(
+                f"{'reused' if img['reused'] else 'promoted'} {img['name']}: {', '.join(img['references'])}"
+            )
+        return 0
+
     archs = args.arch.split(",") if args.arch else list(catalog.archs)
-    signer = Signer(catalog.identity, catalog.issuer)
-    if args.key:
-        signer = Signer(catalog.identity, catalog.issuer, args.key, out / "signing-config.json")
-        if signer.signing_config and not signer.signing_config.exists():
-            # A signing config with no services: no transparency log.
-            _run([tools("cosign"), "signing-config", "create", "--out", str(signer.signing_config)])
+    reuse_signer = (
+        _signer(catalog, args.reuse_key, out, tools)
+        if args.reuse_key
+        else Signer(catalog.identity, catalog.issuer)
+    )
     exceptions = load_exceptions(root / "cve-exceptions.yaml")
     results = []
     # The staging registry is plain HTTP on localhost.
@@ -941,7 +1045,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             signer,
             exceptions,
             targets,
-            skip_existing=args.skip_existing,
+            reuse_from=(catalog.registry if args.reuse_published else args.reuse_from or "").rstrip("/")
+            or None,
+            reuse_signer=reuse_signer,
         )
         for job in jobs:
             r = factory.publish(job)
@@ -950,6 +1056,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     manifest = release_manifest(results, signer, source_info(root), dt.datetime.now(dt.UTC))
     (out / "release.json").write_text(json.dumps(manifest, indent=2) + "\n")
     return 0
+
+
+def _signer(catalog: Catalog, key: str | None, out: Path, tools: Tools) -> Signer:
+    if key is None:
+        return Signer(catalog.identity, catalog.issuer)
+    signer = Signer(catalog.identity, catalog.issuer, key, out / "signing-config.json")
+    if signer.signing_config and not signer.signing_config.exists():
+        # A signing config with no services: no transparency log.
+        _run([tools("cosign"), "signing-config", "create", "--out", str(signer.signing_config)])
+    return signer
 
 
 if __name__ == "__main__":

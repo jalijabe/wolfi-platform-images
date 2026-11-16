@@ -1,0 +1,54 @@
+# Workloads for the functional test. The controller manager registers pods
+# labelled spiffe=enabled; the CSI driver mounts the Workload API into both
+# pods, but only the labelled one may get an identity. The spire-agent image
+# serves as the client (`spire-agent api watch`), running unprivileged.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: functest
+---
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: functest
+spec:
+  spiffeIDTemplate: "spiffe://{{ .TrustDomain }}/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}"
+  podSelector:
+    matchLabels:
+      spiffe: enabled
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: with-identity
+  namespace: functest
+  labels:
+    spiffe: enabled
+spec:
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    # Streams from the Workload API, as real workloads do: retries until the
+    # identity arrives, then prints each SVID it receives.
+    - name: watch
+      image: ${AGENT_IMAGE}
+      imagePullPolicy: Never
+      command: ["/usr/bin/spire-agent"]
+      args: ["api", "watch", "-socketPath", "/spiffe-workload-api/spire-agent.sock"]
+      securityContext:
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      volumeMounts:
+        - name: spiffe-workload-api
+          mountPath: /spiffe-workload-api
+          readOnly: true
+  volumes:
+    - name: spiffe-workload-api
+      csi:
+        driver: csi.spiffe.io
+        readOnly: true

@@ -18,13 +18,20 @@ first.
 - **Signing happens only in `publish.yml` on `main`.** Pull requests build and gate
   but never get an OIDC token, write access or secrets; never use `pull_request_target`.
   The signing identity in `images.yaml` must match the workflow path exactly.
-- **Tests:** positive and negative cases for every check (lint, gate, signing,
-  skip-existing). `task lint`, `task test` and `task images:test` run locally and in CI.
+- **Nothing is built or published without tests.** Every image is staged, CVE-gated
+  and functionally tested (`tests/functional`, marked `@pytest.mark.image(...)`, run
+  hardened against the staged digest) before `promote` copies exactly that digest to
+  the registry. A new image needs real functional tests (its actual job, plus a
+  negative case), not a version check. Never rebuild between test and publish.
+- **Tests:** positive and negative cases for every check (lint, gate, signing, reuse,
+  promote). `task lint`, `task test` and `task images:test` run locally and in CI.
 - Diagrams in Markdown use Mermaid; `task lint:mermaid` proves they parse.
 - Suppress an ASH finding only in `.ash/.ash.yaml`, with a written reason.
 
 ## Commands
 - `task tools`, `task lint`, `task test`
-- `task images:lint` / `images:plan` / `images:lock` / `images:test` (`FACTORY_DOCKER=1` for source builds)
-- `task images:build ONLY=… TARGET=… KEY=…` (without `KEY`: keyless, CI only)
+- `task images:lint` / `images:plan` / `images:lock`
+- `task images:test` = `images:stage` (build, gate, stage) + `images:functest` + `images:verify`
+- `task images:promote TARGET=… KEY=…` (without `KEY`: keyless, CI only); refuses untested images
+- `task status` measures the published images and writes the status site (`.build/site`)
 - `task ash` (`ASH_MODE=local` for a quick pass)

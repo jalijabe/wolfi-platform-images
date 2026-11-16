@@ -1,0 +1,101 @@
+# Status: every day, and after every publish, measure the published images and
+# deploy the status page and README badges to GitHub Pages:
+# - fresh: build time from the signed release manifests; newest upstream release
+#   past the 14-day cooldown;
+# - secure: keyless signature verified against the exact identity; a fresh grype
+#   scan with the same CVE gate as the build;
+# - works: the functional tests, run against the published digests.
+# The run fails (and notifies) when any image needs attention, after the page
+# is updated so the page always tells the truth.
+name: status
+
+on:
+  schedule:
+    - cron: "23 5 * * *"
+  workflow_run:
+    workflows: [publish]
+    types: [completed]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: status
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read # release manifests
+      packages: read # pull the published images even while their packages are private
+    outputs:
+      healthy: ${{ steps.health.outputs.healthy }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: ./.github/actions/setup
+        with:
+          factory: "true"
+      - name: Log in to GHCR (read)
+        env:
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ github.token }}
+        run: printf '%s' "$TOKEN" | .bin/crane auth login ghcr.io -u "$ACTOR" --password-stdin
+      - name: Measure
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: task status
+      - name: Summary
+        run: |
+          jq -r '"| Image | Built | Upstream | CVEs ≥ high | Signature | Functional |",
+                 "|---|---|---|---|---|---|",
+                 (.images[] | "| \(.name):\(.tag) | \(.ageDays // "?") d | \(if .upstream.current then "current" else "update: \(.upstream.latest // .upstream.note)" end) | \(.cves.blocking | length) | \(.signature) | \(.functional.passed)/\(.functional.passed + .functional.failed + .functional.skipped) |")' \
+            .build/site/status.json >> "$GITHUB_STEP_SUMMARY"
+      - name: Health
+        id: health
+        run: |
+          healthy="$(jq '. as $s | [$s.images[] | (.cves.blocking | length) == 0 and .signature == "verified"
+                     and .functional.ok and .upstream.current and .ageDays != null
+                     and .ageDays <= $s.policy.freshDays] | (length > 0) and all' .build/site/status.json)"
+          echo "healthy=$healthy" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: .build/site
+
+  deploy:
+    needs: measure
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+
+  # A red run (and its notification) whenever an image needs attention: a new
+  # CVE at or above the gate, a failed signature, a failing functional test, a
+  # build past the freshness policy or an upstream update past its cooldown.
+  attention:
+    needs: [measure, deploy]
+    if: needs.measure.outputs.healthy != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: An image needs attention
+        run: |
+          echo "::error::An image needs attention; see https://jalijabe.github.io/wolfi-platform-images"
+          exit 1

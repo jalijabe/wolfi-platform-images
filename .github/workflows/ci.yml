@@ -37,9 +37,11 @@ jobs:
       - uses: ./.github/actions/setup
       - run: task test
 
-  # Build every recipe (Wolfi-only with apko; source builds with melange on
-  # Docker), smoke-test, SBOM, CVE-gate, sign with a throwaway key and publish
-  # to a local registry, then verify. Real publishing is publish.yml.
+  # The same pipeline as publishing, minus the real target: build every recipe
+  # (apko; source builds with melange on Docker), smoke-test, SBOM and CVE-gate
+  # it into a local staging registry (throwaway key), run the functional tests
+  # against those digests (Docker and kind), then verify signatures, refusals,
+  # reuse and promotion. Real publishing is publish.yml.
   images:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -58,5 +60,13 @@ jobs:
         with:
           factory: "true"
       - run: task images:test
-        env:
-          FACTORY_DOCKER: "1"
+      - name: Keep test results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: images-test
+          path: |
+            .build/stage/release.json
+            .build/stage/functional.json
+            .build/stage/*/gate.json
+          if-no-files-found: warn

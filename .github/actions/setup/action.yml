@@ -2,7 +2,7 @@ name: Set up toolchain
 description: Go, uv, Node and Task, plus the pinned tools in .bin/ (cached). Versions match Taskfile.yml.
 inputs:
   factory:
-    description: "'true' to also install the factory tools (apko, melange, cosign, crane, grype, syft)"
+    description: "'true' to also install the factory and functional-test tools (apko, melange, cosign, crane, grype, syft, kind, kubectl)"
     default: "false"
 runs:
   using: composite
@@ -31,7 +31,7 @@ runs:
     - name: Install pinned tools
       shell: bash
       run: task tools
-    - name: Install factory tools
+    - name: Install factory and functional-test tools
       if: inputs.factory == 'true'
       shell: bash
-      run: task tools:factory
+      run: task tools:factory tools:functest

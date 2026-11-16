@@ -28,6 +28,7 @@ from imagefactory.factory import (
     Tools,
     check_config,
     elf_interpreter,
+    functional_summary,
     gate,
     lint,
     load_catalog,
@@ -35,6 +36,7 @@ from imagefactory.factory import (
     lock_checksum,
     main,
     plan,
+    promote,
     release_manifest,
     smoke_argv,
 )
@@ -436,13 +438,11 @@ def factory(
     tmp_path: Path,
     runner: FakeRunner,
     signer: Signer | None = None,
-    skip_existing: bool = False,
+    reuse_from: str | None = None,
     archs: Sequence[str] = ("x86_64",),
 ) -> Factory:
     b = Builder(REPO, tmp_path, Tools(tmp_path / "bin"), list(archs), "localhost:1", run=runner)
-    return Factory(
-        b, "high", signer or Signer(IDENTITY, ISSUER), [], TARGETS, TODAY, skip_existing=skip_existing
-    )
+    return Factory(b, "high", signer or Signer(IDENTITY, ISSUER), [], TARGETS, TODAY, reuse_from=reuse_from)
 
 
 def test_publish_signs_and_attests_at_every_target(tmp_path: Path) -> None:
@@ -526,55 +526,57 @@ def test_architectures_per_job(tmp_path: Path) -> None:
     assert b.archs_for(job(kind="melange")) == [HOST_ARCH, other]
 
 
-# ---------------------------------------------------------------- skip existing
+# ---------------------------------------------------------------- reuse
 
 DIGEST = "sha256:" + "d" * 64
+PUBLIC = "ghcr.io/o/r"
 
 
-def published_everywhere() -> dict[str, str]:
-    return {f"{t}/haproxy:1": DIGEST for t in TARGETS}
-
-
-def signed_everywhere() -> set[str]:
-    return {f"{t}/haproxy@{DIGEST}" for t in TARGETS}
-
-
-def test_skip_existing_reuses_a_signed_image(tmp_path: Path) -> None:
-    runner = FakeRunner(grype(), published=published_everywhere(), signed=signed_everywhere())
-    r = factory(tmp_path, runner, skip_existing=True).publish(job())
+def test_reuse_from_skips_a_published_signed_image(tmp_path: Path) -> None:
+    runner = FakeRunner(
+        grype(), published={f"{PUBLIC}/haproxy:1": DIGEST}, signed={f"{PUBLIC}/haproxy@{DIGEST}"}
+    )
+    r = factory(tmp_path, runner, reuse_from=PUBLIC).publish(job())
     assert r.reused
     assert r.digest == DIGEST
-    assert r.references == [f"{t}/haproxy:1@{DIGEST}" for t in TARGETS]
+    assert r.references == [f"{PUBLIC}/haproxy:1@{DIGEST}"]
+    assert r.gate is None
     used = runner.tools_used()
     assert ("apko", "publish") not in used
     assert ("crane", "copy") not in used
     assert ("cosign", "sign") not in used
+    # Reuse is checked against the keyless identity, exactly.
+    verify = next(c for c in runner.calls if c[:2] == ["cosign", "verify"])
+    assert verify[verify.index("--certificate-identity") + 1] == IDENTITY
 
 
 @pytest.mark.parametrize(
     ("published", "signed"),
     [
-        ({}, set()),  # not published anywhere
-        ({"ghcr.io/o/r/haproxy:1": DIGEST}, {f"ghcr.io/o/r/haproxy@{DIGEST}"}),  # one target only
-        (published_everywhere(), {f"ghcr.io/o/r/haproxy@{DIGEST}"}),  # unsigned at one target
-        ({**published_everywhere(), "registry.example/mirror/haproxy:1": "sha256:" + "e" * 64}, None),
+        ({}, set()),  # not published
+        ({f"{PUBLIC}/haproxy:1": DIGEST}, set()),  # published but unsigned (or signed by someone else)
     ],
 )
-def test_skip_existing_rebuilds_unless_every_target_is_signed(
-    tmp_path: Path, published: dict[str, str], signed: set[str] | None
+def test_reuse_from_rebuilds_when_missing_or_unsigned(
+    tmp_path: Path, published: dict[str, str], signed: set[str]
 ) -> None:
-    if signed is None:  # different digests per target, each signed
-        signed = {f"ghcr.io/o/r/haproxy@{DIGEST}", "registry.example/mirror/haproxy@sha256:" + "e" * 64}
     runner = FakeRunner(grype(), published=published, signed=signed)
-    r = factory(tmp_path, runner, skip_existing=True).publish(job())
+    r = factory(tmp_path, runner, reuse_from=PUBLIC).publish(job())
     assert not r.reused
     assert ("apko", "publish") in runner.tools_used()
 
 
-def test_without_skip_existing_always_builds(tmp_path: Path) -> None:
-    runner = FakeRunner(grype(), published=published_everywhere(), signed=signed_everywhere())
+def test_without_reuse_from_always_builds(tmp_path: Path) -> None:
+    runner = FakeRunner(
+        grype(), published={f"{PUBLIC}/haproxy:1": DIGEST}, signed={f"{PUBLIC}/haproxy@{DIGEST}"}
+    )
     assert not factory(tmp_path, runner).publish(job()).reused
     assert ("apko", "publish") in runner.tools_used()
+
+
+def test_sbom_paths_are_recorded_relative_to_the_build_output(tmp_path: Path) -> None:
+    r = factory(tmp_path, FakeRunner(grype())).publish(job())
+    assert r.sboms == {"linux/amd64": "haproxy/sbom-amd64.spdx.json"}
 
 
 # ---------------------------------------------------------------- release manifest
@@ -598,3 +600,106 @@ def test_release_manifest_records_identity_source_and_digests(tmp_path: Path) ->
     json.dumps(m)  # serialisable
     keyed = release_manifest([r], Signer(IDENTITY, ISSUER, "k", tmp_path / "sc"), src, now)
     assert keyed["signing"] == {"mode": "key"}
+
+
+# ---------------------------------------------------------------- promote
+
+STAGED = "localhost:5001"
+
+
+def staged_release(*names: str, reused: Sequence[str] = ()) -> dict[str, Any]:
+    images = []
+    for n in names:
+        reg = PUBLIC if n in reused else STAGED
+        images.append(
+            {
+                "name": n,
+                "tag": "1",
+                "digest": DIGEST,
+                "platforms": {"linux/amd64": "sha256:" + "a" * 64},
+                "references": [f"{reg}/{n}:1@{DIGEST}"],
+                "gate": None if n in reused else {"threshold": "high", "platforms": {}},
+                "smoke": "ok",
+                "reused": n in reused,
+                "sboms": {} if n in reused else {"linux/amd64": f"{n}/sbom-amd64.spdx.json"},
+            }
+        )
+    return {"apiVersion": RELEASE_API, "source": {"commit": "c" * 40}, "images": images}
+
+
+def report(**images: dict[str, list[str]]) -> dict[str, Any]:
+    return {"images": images}
+
+
+PASS = {"passed": ["t::ok"], "failed": [], "skipped": []}
+
+
+def test_promote_copies_tested_digests_and_signs_at_the_target(tmp_path: Path) -> None:
+    runner = FakeRunner(grype())
+    m = promote(
+        staged_release("haproxy", "spire-server", reused=["spire-server"]),
+        report(haproxy=PASS),
+        tmp_path,
+        [PUBLIC],
+        Signer(IDENTITY, ISSUER),
+        Tools(tmp_path / "bin"),
+        run=runner,
+    )
+    copies = [c[2:] for c in runner.calls if c[:2] == ["crane", "copy"]]
+    assert copies == [[f"{STAGED}/haproxy@{DIGEST}", f"{PUBLIC}/haproxy:1"]]  # the tested digest, only
+    signed = [c[-1] for c in runner.calls if c[:2] == ["cosign", "sign"]]
+    assert signed == [f"{PUBLIC}/haproxy@{DIGEST}", f"{PUBLIC}/haproxy@sha256:" + "a" * 64]
+    attest = next(c for c in runner.calls if c[:2] == ["cosign", "attest"])
+    assert attest[attest.index("--predicate") + 1] == str(tmp_path / "haproxy/sbom-amd64.spdx.json")
+    assert ("cosign", "verify") in runner.tools_used()
+    assert ("cosign", "verify-attestation") in runner.tools_used()
+    haproxy, spire = m["images"]
+    assert haproxy["references"] == [f"{PUBLIC}/haproxy:1@{DIGEST}"]
+    assert haproxy["functional"]["ok"]
+    assert spire["reused"]
+    assert m["signing"]["mode"] == "keyless"
+
+
+@pytest.mark.parametrize(
+    "results",
+    [
+        None,  # never tested
+        {"passed": [], "failed": [], "skipped": []},  # nothing ran
+        {"passed": ["t::a"], "failed": ["t::b"], "skipped": []},
+        {"passed": ["t::a"], "failed": [], "skipped": ["t::k8s"]},  # a skipped test is not assurance
+    ],
+)
+def test_promote_refuses_untested_images_and_copies_nothing(
+    tmp_path: Path, results: dict[str, list[str]] | None
+) -> None:
+    runner = FakeRunner(grype())
+    rep = report(haproxy=PASS, **({"spire-server": results} if results is not None else {}))
+    with pytest.raises(SystemExit, match="refusing to promote") as e:
+        promote(
+            staged_release("haproxy", "spire-server"),
+            rep,
+            tmp_path,
+            [PUBLIC],
+            Signer(IDENTITY, ISSUER),
+            Tools(tmp_path / "bin"),
+            run=runner,
+        )
+    assert "spire-server" in str(e.value)
+    assert runner.calls == []  # nothing copied or signed, not even the tested image
+
+
+def test_functional_summary_requires_a_pass_and_no_failures_or_skips() -> None:
+    assert functional_summary(report(x=PASS), "x")["ok"]
+    assert not functional_summary(report(), "x")["ok"]
+    assert not functional_summary(report(x={"passed": ["a"], "failed": [], "skipped": ["b"]}), "x")["ok"]
+
+
+def test_promote_command_refuses_without_functional_results(tmp_path: Path) -> None:
+    rel = tmp_path / "release.json"
+    rel.write_text(json.dumps(staged_release("haproxy")))
+    rep = tmp_path / "functional.json"
+    rep.write_text(json.dumps(report()))
+    args = ["promote", "--root", str(REPO), "--release", str(rel), "--functional", str(rep),
+            "--out", str(tmp_path / "out"), "--keyless", "--target", PUBLIC]  # fmt: skip
+    with pytest.raises(SystemExit, match="refusing to promote"):
+        main(args)
