@@ -62,22 +62,22 @@
       },
       {
         "name": "ld-linux-2.44",
-        "url": "https://packages.wolfi.dev/os/x86_64/ld-linux-2.44-2.44-r20.apk",
-        "version": "2.44-r20",
+        "url": "https://packages.wolfi.dev/os/x86_64/ld-linux-2.44-2.44-r22.apk",
+        "version": "2.44-r22",
         "architecture": "x86_64",
         "signature": {
           "range": "",
           "checksum": ""
         },
         "control": {
-          "range": "bytes=0-29070",
-          "checksum": "sha1-2qJgR5XymaD0M3bx+GKWpxl393k="
+          "range": "bytes=0-29240",
+          "checksum": "sha1-6xut49DURlJiggKGfzGYcbKnV9o="
         },
         "data": {
-          "range": "bytes=29071-169690",
-          "checksum": "sha256-ySDT/d7PNQ8JTKkI1MUU9FpE+i0SvPUi+4++HUlbHBo="
+          "range": "bytes=29241-169865",
+          "checksum": "sha256-4eRE1HLnBjEnkTPTSXEenOYnsztwtGE+6OPrKnAnVpQ="
         },
-        "checksum": "Q12qJgR5XymaD0M3bx+GKWpxl393k="
+        "checksum": "Q16xut49DURlJiggKGfzGYcbKnV9o="
       },
       {
         "name": "libgcc",
@@ -100,41 +100,41 @@
       },
       {
         "name": "glibc-2.44-locale-posix",
-        "url": "https://packages.wolfi.dev/os/x86_64/glibc-2.44-locale-posix-2.44-r20.apk",
-        "version": "2.44-r20",
+        "url": "https://packages.wolfi.dev/os/x86_64/glibc-2.44-locale-posix-2.44-r22.apk",
+        "version": "2.44-r22",
         "architecture": "x86_64",
         "signature": {
           "range": "",
           "checksum": ""
         },
         "control": {
-          "range": "bytes=0-28972",
-          "checksum": "sha1-Qry6de0IOyiYBfx5IHJfN4xaqvw="
+          "range": "bytes=0-29139",
+          "checksum": "sha1-QAMoqZrmS4+choxmdb7vJoZmf9A="
         },
         "data": {
-          "range": "bytes=28973-105728",
-          "checksum": "sha256-UHg+h21s3QTiSwMVT8ty8I9VNLVcB2oy/I7fSYtBA3o="
+          "range": "bytes=29140-105901",
+          "checksum": "sha256-T9G75pr3jI7lyIoYboSLZIOSc/Qioxaa+FIyvJ8C/tw="
         },
-        "checksum": "Q1Qry6de0IOyiYBfx5IHJfN4xaqvw="
+        "checksum": "Q1QAMoqZrmS4+choxmdb7vJoZmf9A="
       },
       {
         "name": "glibc-2.44",
-        "url": "https://packages.wolfi.dev/os/x86_64/glibc-2.44-2.44-r20.apk",
-        "version": "2.44-r20",
+        "url": "https://packages.wolfi.dev/os/x86_64/glibc-2.44-2.44-r22.apk",
+        "version": "2.44-r22",
         "architecture": "x86_64",
         "signature": {
           "range": "",
           "checksum": ""
         },
         "control": {
-          "range": "bytes=0-29388",
-          "checksum": "sha1-L/oIeGpd71cDi0z9ayT6u1sfTGs="
+          "range": "bytes=0-29560",
+          "checksum": "sha1-nILzAAbUZVrCGOl7fa/ydxcSzcE="
         },
         "data": {
-          "range": "bytes=29389-3175735",
-          "checksum": "sha256-gr50Z4Am2my8mJ1WByHVddzZtfNNtSHa6vvx3L7ONr0="
+          "range": "bytes=29561-3175753",
+          "checksum": "sha256-XMXRjgCSHRbMIFIlo1nRoOjt2VezDYyADAD1/BtTezg="
         },
-        "checksum": "Q1L/oIeGpd71cDi0z9ayT6u1sfTGs="
+        "checksum": "Q1nILzAAbUZVrCGOl7fa/ydxcSzcE="
       },
       {
         "name": "lua5.3-libs",
@@ -309,22 +309,22 @@
       },
       {
         "name": "libcrypt1-2.44",
-        "url": "https://packages.wolfi.dev/os/x86_64/libcrypt1-2.44-2.44-r20.apk",
-        "version": "2.44-r20",
+        "url": "https://packages.wolfi.dev/os/x86_64/libcrypt1-2.44-2.44-r22.apk",
+        "version": "2.44-r22",
         "architecture": "x86_64",
         "signature": {
           "range": "",
           "checksum": ""
         },
         "control": {
-          "range": "bytes=0-29073",
-          "checksum": "sha1-R8Z15DtV3ZCVv0y9veFjdCXUnoo="
+          "range": "bytes=0-29243",
+          "checksum": "sha1-Ooy7PYHaPbYnucWgFoIuHsbF3Po="
         },
         "data": {
-          "range": "bytes=29074-30696",
-          "checksum": "sha256-kaZ7ETsNdVvXw7k7+tZ+NV6exUiJGBdKENO7bn9NUjo="
+          "range": "bytes=29244-30863",
+          "checksum": "sha256-AkAjaQA6AAxH5SSwoTTqX9B6dAVpGx+Oh9zMN4cGB48="
         },
-        "checksum": "Q1R8Z15DtV3ZCVv0y9veFjdCXUnoo="
+        "checksum": "Q1Ooy7PYHaPbYnucWgFoIuHsbF3Po="
       },
       {
         "name": "haproxy-3.4-nocaps",
