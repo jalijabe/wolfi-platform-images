@@ -14,7 +14,7 @@ contents:
   packages:
     - wolfi-baselayout=20230201-r31
     - ca-certificates-bundle=20261020-r0
-    - spire-agent-src=1.15.5-r0
+    - spire-agent-src=1.16.0-r0
 
 accounts:
   groups:
@@ -30,7 +30,7 @@ entrypoint:
   command: /usr/bin/spire-agent run
 
 annotations:
-  org.opencontainers.image.version: 1.15.5-r0
+  org.opencontainers.image.version: 1.16.0-r0
   org.opencontainers.image.source: https://github.com/spiffe/spire
   org.opencontainers.image.licenses: Apache-2.0
 

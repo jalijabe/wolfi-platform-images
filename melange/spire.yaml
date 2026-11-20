@@ -11,7 +11,7 @@
 # (their Go modules are scanned directly).
 package:
   name: spire-server-src
-  version: "1.15.5"
+  version: "1.16.0"
   epoch: 0
   description: SPIRE server, built from source by the image factory
   copyright:
@@ -33,7 +33,7 @@ environment:
     GOTOOLCHAIN: local
 
 vars:
-  commit: f62d747d56e9caa6a38ad4bcbc32dbcc3dc1399a
+  commit: "872c1d55b4d5ac7fc1bf05f0760f2ca740ab37aa"
 
 pipeline:
   - uses: git-checkout
