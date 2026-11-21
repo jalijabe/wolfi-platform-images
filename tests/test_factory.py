@@ -41,6 +41,11 @@ from imagefactory.factory import (
     release_manifest,
     smoke_argv,
 )
+from tests.versions import expected_commit, newer, revision, tag
+
+# The real recipes' current pins, for the lint cases that edit them.
+HAPROXY, SPIRE = tag("haproxy"), tag("spire-server")
+CSI_COMMIT = expected_commit("melange/spiffe-csi-driver.yaml")
 
 REPO = Path(__file__).resolve().parents[1]
 TODAY = dt.date(2026, 11, 15)
@@ -259,11 +264,11 @@ def relock(recipe: Path) -> None:
 @pytest.mark.parametrize(
     ("file", "old", "new", "problem"),
     [
-        ("apko/haproxy.yaml", "haproxy-3.4-nocaps=3.4.7-r1", "haproxy-3.4-nocaps", "is not pinned"),
+        ("apko/haproxy.yaml", f"haproxy-3.4-nocaps={HAPROXY}", "haproxy-3.4-nocaps", "is not pinned"),
         (
             "apko/haproxy.yaml",
-            "image.version: 3.4.7-r1",
-            "image.version: 3.4.8-r0",
+            f"image.version: {HAPROXY}",
+            f"image.version: {newer(HAPROXY)}",
             "differs from the catalog tag",
         ),
         ("apko/haproxy.yaml", 'run-as: "65532"', 'run-as: "0"', "runs as '0'"),
@@ -276,17 +281,22 @@ def relock(recipe: Path) -> None:
         ("apko/spire-agent.yaml", 'run-as: "0"', 'run-as: "65532"', "runs as '65532'"),
         (
             "apko/spire-server.yaml",
-            "spire-server-src=1.15.5-r0",
-            "spire-server-src=1.15.4-r0",
-            "builds 1.15.5-r0",
+            f"spire-server-src={SPIRE}",
+            f"spire-server-src={newer(SPIRE)}",
+            f"builds {SPIRE}",
         ),
         ("melange/spire.yaml", "name: spire-agent-src", "name: spire-agent", "must end in -src"),
-        ("melange/spire.yaml", "epoch: 0", "epoch: 1", "the catalog tag is 1.15.5-r0"),
+        (
+            "melange/spire.yaml",
+            f"epoch: {revision('spire-server')}",
+            f"epoch: {revision('spire-server') + 1}",
+            f"the catalog tag is {SPIRE}",
+        ),
         ("melange/spire.yaml", "GOTOOLCHAIN: local", "GOTOOLCHAIN: auto", "GOTOOLCHAIN=local"),
         (
             "melange/spiffe-csi-driver.yaml",
-            "expected-commit: 3d52",
-            "expected-commit: 3d5",
+            f"expected-commit: {CSI_COMMIT}",
+            f"expected-commit: {CSI_COMMIT[:-1]}",
             "expected-commit",
         ),
     ],
