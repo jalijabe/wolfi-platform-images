@@ -24,6 +24,7 @@ from imagefactory.status import (
     wolfi_upstream,
 )
 from imagefactory.statuspage import badge, render, write_site
+from tests.versions import tag, upstream
 
 REPO = Path(__file__).resolve().parents[1]
 NOW = dt.datetime(2026, 11, 16, 12, 0, tzinfo=dt.UTC)
@@ -94,9 +95,10 @@ def test_github_upstream_ignores_prereleases_drafts_and_the_cooldown() -> None:
 
 def test_upstream_sources_come_from_the_recipes() -> None:
     c = load_catalog(REPO / "images.yaml")
-    assert upstream_for(REPO, c.images["haproxy"]) == ("wolfi", "haproxy-3.4-nocaps", "3.4.7-r1")
-    assert upstream_for(REPO, c.images["spire-server"]) == ("github", "spiffe/spire", "1.15.5")
-    assert upstream_for(REPO, c.images["spiffe-csi-driver"]) == ("github", "spiffe/spiffe-csi", "0.3.0")
+    # The recipes and the catalog agree on each image's version.
+    assert upstream_for(REPO, c.images["haproxy"]) == ("wolfi", "haproxy-3.4-nocaps", tag("haproxy"))
+    for image, source in [("spire-server", "spiffe/spire"), ("spiffe-csi-driver", "spiffe/spiffe-csi")]:
+        assert upstream_for(REPO, c.images[image]) == ("github", source, upstream(image))
 
 
 # ---------------------------------------------------------------- measure
@@ -126,15 +128,15 @@ def catalog() -> Catalog:
 
 
 def current() -> dict[str, Any]:
-    ref = "ghcr.io/o/r/haproxy:3.4.7-r1@sha256:abc"
-    img = {"name": "haproxy", "tag": "3.4.7-r1", "digest": "sha256:abc", "platforms": {}}
+    ref = f"ghcr.io/o/r/haproxy:{tag('haproxy')}@sha256:abc"
+    img = {"name": "haproxy", "tag": tag("haproxy"), "digest": "sha256:abc", "platforms": {}}
     return {"apiVersion": RELEASE_API, "images": [{**img, "references": [ref], "reused": True}],
             "missing": ["spire-server"]}  # fmt: skip
 
 
 def fetch(url: str) -> bytes:
     assert "APKINDEX" in url
-    return apkindex(("haproxy-3.4-nocaps", "3.4.7-r1", int((NOW - dt.timedelta(days=40)).timestamp())))
+    return apkindex(("haproxy-3.4-nocaps", tag("haproxy"), int((NOW - dt.timedelta(days=40)).timestamp())))
 
 
 def measured(matches: list[dict[str, Any]], verified: bool = True, **kw: Any) -> dict[str, Any]:
@@ -312,7 +314,7 @@ def test_pills_open_the_row_with_what_was_tested_and_the_findings() -> None:
 
 def test_pull_and_verify_commands_are_copyable() -> None:
     page = render(detailed_status())
-    ref = "ghcr.io/o/r/haproxy:3.4.7-r1@sha256:abc"
+    ref = f"ghcr.io/o/r/haproxy:{tag('haproxy')}@sha256:abc"
     assert f"docker pull {ref}</pre>" in page
     assert f"  {ref}</pre>" in page  # the image's own verify command
     assert page.count('class="copy"') == 3  # pull, verify, and the page's "verify it yourself" box

@@ -18,12 +18,17 @@ import yaml
 from imagefactory.factory import lint, load_catalog
 from imagefactory.status import WOLFI_INDEX
 from imagefactory.update import Change, apply, plan, summary, tag_commit
+from tests.versions import github_sources, newer, older, tag, upstream
 
 REPO = Path(__file__).resolve().parents[1]
 NOW = dt.datetime(2026, 12, 20, tzinfo=dt.UTC)
 OLD = int((NOW - dt.timedelta(days=20)).timestamp())  # past the cooldown
 NEW = int((NOW - dt.timedelta(days=3)).timestamp())  # inside it
 C1, C2 = "1" * 40, "2" * 40
+# The real recipes' current versions, and newer ones for the fake feeds to offer.
+HAPROXY = tag("haproxy")
+HAPROXY_NEXT = newer(HAPROXY, by=3)  # e.g. 3.4.7-r1 -> 3.4.10-r0: numeric, not lexical, ordering
+SPIRE = upstream("spire-server")
 
 
 @pytest.fixture
@@ -78,11 +83,8 @@ class Feed:
 
 
 def unchanged_releases() -> dict[str, list[dict[str, Any]]]:
-    return {
-        "spiffe/spire": [gh_release("v1.15.5", 40)],
-        "spiffe/spire-controller-manager": [gh_release("v0.8.1", 40)],
-        "spiffe/spiffe-csi": [gh_release("v0.3.0", 40)],
-    }
+    """Every source build's upstream at exactly the pinned release."""
+    return {repo: [gh_release(f"v{version}", 40)] for repo, version in github_sources().items()}
 
 
 def test_nothing_newer_means_no_changes(repo: Path) -> None:
@@ -92,20 +94,20 @@ def test_nothing_newer_means_no_changes(repo: Path) -> None:
 
 
 def test_a_newer_main_package_moves_the_tag_and_annotation(repo: Path) -> None:
-    feed = Feed([*current_index(), ("haproxy-3.4-nocaps", "3.4.10-r0", OLD)], unchanged_releases())
+    feed = Feed([*current_index(), ("haproxy-3.4-nocaps", HAPROXY_NEXT, OLD)], unchanged_releases())
     cat = load_catalog(repo / "images.yaml")
     changes = plan(repo, cat, feed, NOW)
     assert [(c.kind, c.package, c.old, c.new, c.images) for c in changes] == [
-        ("wolfi", "haproxy-3.4-nocaps", "3.4.7-r1", "3.4.10-r0", ("haproxy",))
+        ("wolfi", "haproxy-3.4-nocaps", HAPROXY, HAPROXY_NEXT, ("haproxy",))
     ]
     apply(repo, cat, changes)
     recipe = (repo / "apko/haproxy.yaml").read_text()
-    assert "haproxy-3.4-nocaps=3.4.10-r0" in recipe
-    assert "org.opencontainers.image.version: 3.4.10-r0" in recipe
+    assert f"haproxy-3.4-nocaps={HAPROXY_NEXT}" in recipe
+    assert f"org.opencontainers.image.version: {HAPROXY_NEXT}" in recipe
     assert "# HAProxy from Wolfi packages." in recipe  # comments kept
     after = load_catalog(repo / "images.yaml")
-    assert after.images["haproxy"]["tag"] == "3.4.10-r0"
-    assert after.images["spire-server"]["tag"] == "1.15.5-r0"
+    assert after.images["haproxy"]["tag"] == HAPROXY_NEXT
+    assert after.images["spire-server"]["tag"] == tag("spire-server")
     # Consistent except the lock, which `task images:lock` refreshes next.
     assert [p for p in lint(repo, after) if "is stale" not in p] == []
 
@@ -127,8 +129,8 @@ def test_a_newer_base_package_is_bumped_everywhere_without_moving_tags(repo: Pat
 @pytest.mark.parametrize(
     "extra",
     [
-        ("haproxy-3.4-nocaps", "3.4.10-r0", NEW),  # inside the cooldown
-        ("haproxy-3.4-nocaps", "3.4.6-r0", OLD),  # older: never downgrade
+        ("haproxy-3.4-nocaps", HAPROXY_NEXT, NEW),  # inside the cooldown
+        ("haproxy-3.4-nocaps", older(HAPROXY), OLD),  # older: never downgrade
         ("haproxy-3.2", "3.2.30-r0", OLD),  # another stream: not ours
     ],
 )
@@ -138,32 +140,33 @@ def test_no_change_inside_the_cooldown_or_downward(repo: Path, extra: tuple[str,
 
 
 def test_a_newer_upstream_release_updates_the_source_build_and_every_image(repo: Path) -> None:
+    nxt = newer(SPIRE, by=2)
     rels = unchanged_releases()
     rels["spiffe/spire"] = [
-        gh_release("v1.15.5", 40),
-        gh_release("v1.15.7", 20),
-        gh_release("v1.16.0", 5),  # inside the cooldown
-        gh_release("v1.17.0-rc1", 20, prerelease=True),
+        gh_release(f"v{SPIRE}", 40),
+        gh_release(f"v{nxt}", 20),
+        gh_release(f"v{newer(SPIRE, 'minor')}", 5),  # inside the cooldown
+        gh_release(f"v{newer(SPIRE, 'minor', 2)}-rc1", 20, prerelease=True),
     ]
     feed = Feed(current_index(), rels)
     base = "https://api.github.com/repos/spiffe/spire/git"
-    feed.refs[f"{base}/ref/tags/v1.15.7"] = {"type": "tag", "sha": C2}  # annotated: peeled
+    feed.refs[f"{base}/ref/tags/v{nxt}"] = {"type": "tag", "sha": C2}  # annotated: peeled
     feed.refs[f"{base}/tags/{C2}"] = {"type": "commit", "sha": C1}
     cat = load_catalog(repo / "images.yaml")
     (change,) = plan(repo, cat, feed, NOW)
     assert (change.kind, change.package, change.old, change.new, change.commit) == (
-        "source", "spire-server-src", "1.15.5", "1.15.7", C1,
+        "source", "spire-server-src", SPIRE, nxt, C1,
     )  # fmt: skip
     assert change.images == ("spire-server", "spire-agent")
     apply(repo, cat, [change])
     m = yaml.safe_load((repo / "melange/spire.yaml").read_text())
-    assert m["package"]["version"] == "1.15.7"
+    assert m["package"]["version"] == nxt
     assert m["package"]["epoch"] == 0
     assert m["vars"]["commit"] == C1  # a string, even though this SHA is all digits
     after = load_catalog(repo / "images.yaml")
-    assert after.images["spire-server"]["tag"] == "1.15.7-r0"
-    assert after.images["spire-agent"]["tag"] == "1.15.7-r0"
-    assert "spire-agent-src=1.15.7-r0" in (repo / "apko/spire-agent.yaml").read_text()
+    assert after.images["spire-server"]["tag"] == f"{nxt}-r0"
+    assert after.images["spire-agent"]["tag"] == f"{nxt}-r0"
+    assert f"spire-agent-src={nxt}-r0" in (repo / "apko/spire-agent.yaml").read_text()
     assert lint(repo, after) == []  # pins, tags, annotations and commit all agree
 
 
