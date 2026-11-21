@@ -37,13 +37,13 @@ images:
   # Wolfi's public SPIRE packages are stale (the CVE gate rejects them), so
   # SPIRE is built from source.
   spire-server:
-    tag: 1.15.5-r0
+    tag: 1.16.0-r0
     recipe: apko/spire-server.yaml
     package: melange/spire.yaml
     smoke: {args: ["--version"], expect: "{version}"}
 
   spire-agent:
-    tag: 1.15.5-r0
+    tag: 1.16.0-r0
     recipe: apko/spire-agent.yaml
     package: melange/spire.yaml
     runAsRoot: workload attestation reads other processes' /proc entries (upstream runs it as root)
