@@ -176,22 +176,22 @@
       },
       {
         "name": "openssl-provider-legacy-allowed",
-        "url": "https://packages.wolfi.dev/os/x86_64/openssl-provider-legacy-allowed-4.1.0-r0.apk",
-        "version": "4.1.0-r0",
+        "url": "https://packages.wolfi.dev/os/x86_64/openssl-provider-legacy-allowed-4.1.0-r1.apk",
+        "version": "4.1.0-r1",
         "architecture": "x86_64",
         "signature": {
           "range": "",
           "checksum": ""
         },
         "control": {
-          "range": "bytes=0-8346",
-          "checksum": "sha1-K5CR6PVd/wWU++lG1SG1MRrQkJA="
+          "range": "bytes=0-14716",
+          "checksum": "sha1-MJbi7jyRBoS1VddlE1o/2DO4hEg="
         },
         "data": {
-          "range": "bytes=8347-364301",
-          "checksum": "sha256-VGUxk6rxtn3mLQpfTPZSWfIgtgQPoZK7cqCopeZzMgw="
+          "range": "bytes=14717-370662",
+          "checksum": "sha256-wQonPDXDwuR1R9h1G33Tk9VOYTcTYNRj+vPHUNjtMyc="
         },
-        "checksum": "Q1K5CR6PVd/wWU++lG1SG1MRrQkJA="
+        "checksum": "Q1MJbi7jyRBoS1VddlE1o/2DO4hEg="
       },
       {
         "name": "libbrotlicommon1",
